@@ -904,19 +904,107 @@ _FRESHNESS_SCORES: dict[str, float] = {
     "frozen": 0.5,
 }
 
+# ── Taste modality mapping ───────────────────────────────────────────────────
+# Maps odorant descriptors to the five basic taste modalities.
+# A descriptor can map to multiple modalities.
+_TASTE_MODALITIES: dict[str, list[str]] = {
+    "sweet": ["sweet", "honey", "caramel", "vanilla", "sugar", "candy",
+              "chocolate", "butterscotch", "maple", "molasses", "creamy"],
+    "salty": ["salty", "briny", "saline", "marine", "oceanic", "sea"],
+    "sour": ["sour", "acidic", "tart", "citrus", "vinegar", "lemon",
+             "lime", "tangy", "acetic", "fermented"],
+    "bitter": ["bitter", "coffee", "cocoa", "dark", "burnt", "charred",
+               "roasted", "smoky", "astringent", "medicinal"],
+    "umami": ["umami", "savory", "meaty", "brothy", "mushroom", "malt",
+              "fermented", "cheese", "soy", "roast beef", "meat"],
+}
+
+# Total number of taste modalities (for normalization)
+_NUM_MODALITIES = len(_TASTE_MODALITIES)
+
+
+def _fuzzy_odorant_lookup(ingredient: str, food_to_odorants: dict) -> list:
+    """Look up odorants for an ingredient with fuzzy matching fallback.
+
+    Strategy:
+    1. Exact match on the full ingredient name.
+    2. Check if any food key is a substring of the ingredient name
+       (e.g. "chicken" in "whole chicken bone in, french butchered").
+    3. Check if the ingredient name is a substring of any food key.
+    4. Token overlap — pick the food key sharing the most words with
+       the ingredient, requiring at least 1 meaningful token match.
+
+    Returns the odorant list from the best match, or [] if nothing found.
+    """
+    # 1. Exact match
+    if ingredient in food_to_odorants:
+        return food_to_odorants[ingredient]
+
+    # 2. Food key is substring of ingredient
+    for food_key, odorants in food_to_odorants.items():
+        if len(food_key) >= 3 and food_key in ingredient:
+            return odorants
+
+    # 3. Ingredient is substring of food key
+    if len(ingredient) >= 3:
+        for food_key, odorants in food_to_odorants.items():
+            if ingredient in food_key:
+                return odorants
+
+    # 4. Token overlap
+    _STOP_WORDS = {
+        "a", "an", "the", "of", "in", "with", "and", "or", "for",
+        "to", "on", "bone", "whole", "fresh", "dried", "ground",
+        "raw", "cooked", "cut", "sliced", "diced", "chopped",
+        "pieces", "small", "large", "medium",
+    }
+    ing_tokens = set(ingredient.split()) - _STOP_WORDS
+    if not ing_tokens:
+        return []
+
+    best_match = None
+    best_overlap = 0
+    for food_key, odorants in food_to_odorants.items():
+        food_tokens = set(food_key.split()) - _STOP_WORDS
+        overlap = len(ing_tokens & food_tokens)
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_match = odorants
+
+    return best_match if best_overlap >= 1 else []
+
 
 def evaluate_taste(recipe: Recipe, intent: dict, food_to_odorants: dict) -> float:
     """Compute actual taste as a weighted heuristic combination.
 
-    actual_taste = 0.55 * pairing_score + 0.45 * constraint_score
+    actual_taste = 0.35 * pairing_score
+                 + 0.25 * flavor_balance_score
+                 + 0.15 * odorant_diversity_score
+                 + 0.25 * constraint_score
 
     Each component is clamped to [0.0, 1.0].
 
     Requirements: 4.1, 4.2, 4.3, 4.4
     """
     ingredients = recipe.ingredients_required
+    ingredient_names = [ing.name.lower() for ing in ingredients]
 
-    # ── 1. Pairing score (weight 0.55) ───────────────────────────────────
+    # ── Collect all odorants for the recipe ──────────────────────────────
+    all_odorants = []  # list of odorant dicts across all ingredients
+    all_descriptors = []  # flat list of descriptor strings
+    all_functional_groups = set()
+    for name in ingredient_names:
+        for o in _fuzzy_odorant_lookup(name, food_to_odorants):
+            if isinstance(o, dict):
+                all_odorants.append(o)
+                all_descriptors.extend(
+                    d.lower() for d in o.get("descriptors", [])
+                )
+                all_functional_groups.update(
+                    fg.lower() for fg in o.get("functional_groups", [])
+                )
+
+    # ── 1. Pairing score (weight 0.35) ───────────────────────────────────
     ingredient_names = [ing.name.lower() for ing in ingredients]
     pairs = [
         (ingredient_names[i], ingredient_names[j])
@@ -928,8 +1016,8 @@ def evaluate_taste(recipe: Recipe, intent: dict, food_to_odorants: dict) -> floa
         shared_counts = []
         max_shared = 0
         for a, b in pairs:
-            raw_a = food_to_odorants.get(a, [])
-            raw_b = food_to_odorants.get(b, [])
+            raw_a = _fuzzy_odorant_lookup(a, food_to_odorants)
+            raw_b = _fuzzy_odorant_lookup(b, food_to_odorants)
             odorants_a = set(
                 o["name"] if isinstance(o, dict) else o for o in raw_a
             )
@@ -950,7 +1038,38 @@ def evaluate_taste(recipe: Recipe, intent: dict, food_to_odorants: dict) -> floa
 
     pairing_score = max(0.0, min(1.0, pairing_score))
 
-    # ── 3. Constraint satisfaction score (weight 0.3) ────────────────────
+    # ── 2. Flavor balance score (weight 0.25) ────────────────────────────
+    # Measures how many of the 5 basic taste modalities are represented.
+    if all_descriptors:
+        modalities_hit = set()
+        descriptor_set = set(all_descriptors)
+        for modality, keywords in _TASTE_MODALITIES.items():
+            if descriptor_set & set(keywords):
+                modalities_hit.add(modality)
+        flavor_balance_score = len(modalities_hit) / _NUM_MODALITIES
+    else:
+        flavor_balance_score = 0.5
+
+    flavor_balance_score = max(0.0, min(1.0, flavor_balance_score))
+
+    # ── 3. Odorant diversity score (weight 0.15) ─────────────────────────
+    # Rewards recipes whose ingredients draw from many distinct odorant
+    # compounds and functional groups, indicating aromatic complexity.
+    if all_odorants:
+        unique_odorant_names = set(
+            o["name"] for o in all_odorants if isinstance(o, dict)
+        )
+        # Normalize: 30+ unique odorants is considered highly diverse
+        odorant_count_score = min(len(unique_odorant_names) / 30.0, 1.0)
+        # Normalize: 10+ functional groups is considered highly diverse
+        fg_count_score = min(len(all_functional_groups) / 10.0, 1.0)
+        odorant_diversity_score = 0.6 * odorant_count_score + 0.4 * fg_count_score
+    else:
+        odorant_diversity_score = 0.5
+
+    odorant_diversity_score = max(0.0, min(1.0, odorant_diversity_score))
+
+    # ── 4. Constraint satisfaction score (weight 0.25) ───────────────────
     total_constraints = 0
     satisfied_constraints = 0
 
@@ -1029,7 +1148,12 @@ def evaluate_taste(recipe: Recipe, intent: dict, food_to_odorants: dict) -> floa
     constraint_score = max(0.0, min(1.0, constraint_score))
 
     # ── Final weighted combination ───────────────────────────────────────
-    return 0.55 * pairing_score + 0.45 * constraint_score
+    return (
+        0.35 * pairing_score
+        + 0.25 * flavor_balance_score
+        + 0.15 * odorant_diversity_score
+        + 0.25 * constraint_score
+    )
 
 
 # ── Mode Selector ─────────────────────────────────────────────────────────────
