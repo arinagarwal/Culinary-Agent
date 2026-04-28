@@ -1,7 +1,8 @@
 {
-  "spice_preference": 0.39648554750000004,
-  "health_bias": 0.5,
+  "spice_preference": 0.37970320661875,
+  "health_bias": 0.525,
   "cuisine_affinity": {
-    "italian": 0.35695639
+    "italian": 0.35695639,
+    "thai": 0.0975
   }
 }

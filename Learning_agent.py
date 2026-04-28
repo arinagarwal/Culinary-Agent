@@ -730,11 +730,12 @@ HEALTH_CONSTRAINT_KEYS = [
 class SelfModel:
     """Persistent behavioral preference abstractions.
 
-    Tracks three preference dimensions that are updated incrementally
-    from observed recipe decisions:
-    - **spice_preference** (float 0–1): affinity for spicy ingredients.
-    - **health_bias** (float 0–1): tendency toward health-oriented recipes.
-    - **cuisine_affinity** (dict str→float): per-cuisine affinity scores.
+    Tracks three preference dimensions that the agent develops over time
+    from its own recipe generation patterns:
+    - **spice_preference** (float 0–1): learned affinity for spicy ingredients.
+    - **health_bias** (float 0–1): learned tendency toward health-oriented recipes.
+    - **cuisine_affinity** (dict str→float): per-cuisine affinity scores developed
+      through repeated recipe generation.
     """
 
     def __init__(self, persistence_path: str) -> None:
@@ -848,7 +849,7 @@ class SelfModel:
     def to_prompt_context(self) -> str:
         """Format preferences as a string block for prompt injection."""
         parts = [
-            f"User preferences: spice_preference={self.spice_preference:.1f}, "
+            f"Agent learned preferences: spice_preference={self.spice_preference:.1f}, "
             f"health_bias={self.health_bias:.1f}."
         ]
 
@@ -907,7 +908,7 @@ _FRESHNESS_SCORES: dict[str, float] = {
 def evaluate_taste(recipe: Recipe, intent: dict, food_to_odorants: dict) -> float:
     """Compute actual taste as a weighted heuristic combination.
 
-    actual_taste = 0.3 * quality_score + 0.4 * pairing_score + 0.3 * constraint_score
+    actual_taste = 0.55 * pairing_score + 0.45 * constraint_score
 
     Each component is clamped to [0.0, 1.0].
 
@@ -915,21 +916,7 @@ def evaluate_taste(recipe: Recipe, intent: dict, food_to_odorants: dict) -> floa
     """
     ingredients = recipe.ingredients_required
 
-    # ── 1. Ingredient quality score (weight 0.3) ─────────────────────────
-    if ingredients:
-        freshness_values = [
-            _FRESHNESS_SCORES.get(
-                _KITCHEN_FRESHNESS.get(ing.name.lower(), ""), 0.5
-            )
-            for ing in ingredients
-        ]
-        quality_score = sum(freshness_values) / len(freshness_values)
-    else:
-        quality_score = 0.5
-
-    quality_score = max(0.0, min(1.0, quality_score))
-
-    # ── 2. Pairing score (weight 0.4) ────────────────────────────────────
+    # ── 1. Pairing score (weight 0.55) ───────────────────────────────────
     ingredient_names = [ing.name.lower() for ing in ingredients]
     pairs = [
         (ingredient_names[i], ingredient_names[j])
@@ -941,8 +928,14 @@ def evaluate_taste(recipe: Recipe, intent: dict, food_to_odorants: dict) -> floa
         shared_counts = []
         max_shared = 0
         for a, b in pairs:
-            odorants_a = set(food_to_odorants.get(a, []))
-            odorants_b = set(food_to_odorants.get(b, []))
+            raw_a = food_to_odorants.get(a, [])
+            raw_b = food_to_odorants.get(b, [])
+            odorants_a = set(
+                o["name"] if isinstance(o, dict) else o for o in raw_a
+            )
+            odorants_b = set(
+                o["name"] if isinstance(o, dict) else o for o in raw_b
+            )
             shared = len(odorants_a & odorants_b)
             shared_counts.append(shared)
             if shared > max_shared:
@@ -1036,7 +1029,7 @@ def evaluate_taste(recipe: Recipe, intent: dict, food_to_odorants: dict) -> floa
     constraint_score = max(0.0, min(1.0, constraint_score))
 
     # ── Final weighted combination ───────────────────────────────────────
-    return 0.3 * quality_score + 0.4 * pairing_score + 0.3 * constraint_score
+    return 0.55 * pairing_score + 0.45 * constraint_score
 
 
 # ── Mode Selector ─────────────────────────────────────────────────────────────
@@ -1107,9 +1100,20 @@ User request:
 
     text = response.choices[0].message.content.strip()
 
+    _SPICE_LABEL_MAP = {
+        "none": 0.0, "mild": 0.25, "medium": 0.5, "high": 0.75, "extreme": 1.0,
+    }
+
     try:
         text = clean_llm_json(text)
         data = json.loads(text)
+
+        # Coerce string spice_level to float before validation
+        prefs = data.get("preferences") or {}
+        sl = prefs.get("spice_level")
+        if isinstance(sl, str):
+            prefs["spice_level"] = _SPICE_LABEL_MAP.get(sl.lower())
+
         intent = Intent.model_validate(data)
         # Remove fields where value is None
         intent = intent.model_dump(exclude_none=True)
@@ -1152,7 +1156,7 @@ def generate_recipes(
         )
     if sm_bias:
         bias_section += (
-            "\nSelfModel preferences (adjust recipes accordingly):\n"
+            "\nAgent's own learned preferences (incorporate these tendencies):\n"
             f"{sm_bias}\n"
         )
 
