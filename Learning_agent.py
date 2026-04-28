@@ -593,6 +593,25 @@ class RecipeCandidates(BaseModel):
     recipes: List[Recipe]
 
 
+class IngredientAddition(BaseModel):
+    ingredient: str
+    reason: str
+
+
+class RecipeIngredientSuggestions(BaseModel):
+    recipe_name: str
+    kitchen_state_additions: List[IngredientAddition]
+    external_additions: List[IngredientAddition]
+
+
+class RecipeEnhanced(BaseModel):
+    recipe_name: str
+    description: str
+    enhancements_description: str
+    ingredients_required: List[Ingredient]
+    steps: List[Step]
+
+
 # ── Persistence utilities ────────────────────────────────────────────────────
 
 
@@ -1192,7 +1211,7 @@ def clean_llm_json(text: str) -> str:
     return text.strip()
 
 
-def parse_intent(user_input: str, schema: dict) -> dict:
+def parse_intent(user_input: str, schema: dict, temperature: float = 0.8) -> dict:
     """Call Groq LLM with SYSTEM_PROMPT to extract intent from user input.
 
     Uses the module-level ``client``, ``MODEL_NAME``, and ``SYSTEM_PROMPT``.
@@ -1218,7 +1237,7 @@ User request:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.8,
+        temperature=temperature,
         max_tokens=200,
     )
 
@@ -1254,6 +1273,7 @@ def generate_recipes(
     user_input: str,
     wm_bias: str = None,
     sm_bias: str = None,
+    temperature: float = 0.8,
 ) -> RecipeCandidates:
     """Generate 3 candidate recipes via Groq LLM.
 
@@ -1304,7 +1324,7 @@ Prompt:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.8,
+        temperature=temperature,
         max_tokens=4096,
     )
 
@@ -1408,6 +1428,7 @@ def validate_and_fix_recipes(
     user_input: str,
     wm_bias: str = None,
     sm_bias: str = None,
+    temperature: float = 0.8,
 ) -> RecipeCandidates:
     """Validate each recipe against *intent* and retry failing ones.
 
@@ -1439,7 +1460,8 @@ def validate_and_fix_recipes(
 
         while attempts < MAX_RETRIES:
             new_candidates = generate_recipes(
-                intent, user_input, wm_bias=wm_bias, sm_bias=sm_bias
+                intent, user_input, wm_bias=wm_bias, sm_bias=sm_bias,
+                temperature=temperature,
             )
 
             if not new_candidates:
@@ -1705,6 +1727,339 @@ def detect_convergence(log_path: str) -> bool:
     return True
 
 
+# ── Recipe Optimization Pipeline ──────────────────────────────────────────────
+# Mirrors the culinary agent's approach: suggest additions, improve recipes,
+# score them, and pick the best one.
+
+
+INGREDIENT_SUGGESTION_PROMPT = """
+  Return a JSON object with this structure:
+
+  {
+  "recipe_name": string,
+  "kitchen_state_additions": [
+    {"ingredient": string, "reason": string}
+  ],
+  "external_additions": [
+    {"ingredient": string, "reason": string}
+  ]
+  }
+
+  Rules:
+  - Recommend exactly 6 ingredients from the kitchen state
+  - Recommend exactly 6 ingredients NOT in the kitchen state
+  - Include odorant information in reason if possible
+  - Do not output anything except JSON
+"""
+
+RECIPE_IMPROVEMENT_PROMPT = """
+Create an improved version of the following recipe.
+
+Rules:
+- Use ALL of the ingredients listed under "additions_from_kitchen".
+- Keep the dish recognizable.
+- Integrate the new ingredients naturally into the recipe.
+- Produce a full recipe with:
+  - ingredient list
+  - cooking steps
+- Give a couple sentences about the enhancements that you made
+
+Return JSON in this format:
+
+{
+  "recipe_name": "string",
+  "description": "string",
+  "enhancements_description": "string",
+  "ingredients_required": [
+        {
+          "name": "string",
+          "quantity": number,
+          "unit": "string",
+          "preparation": "string"
+        }
+    ],
+  "steps": [
+        {
+          "step_number": number,
+          "instruction": "string"
+        }
+      ]
+}
+"""
+
+EVAL_PROMPT = """
+Score the following recipe for flavor quality.
+
+Consider:
+- balance of flavor
+- culinary realism
+
+Return a ONLY A SINGLE NUMBER between 0 and 100.
+DO NOT RETURN ANY EXPLANATION
+"""
+
+
+def suggest_recipe_additions(
+    candidates: RecipeCandidates,
+    temperature: float = 0.0,
+) -> list:
+    """For each recipe, use RAG context to suggest kitchen and external additions.
+
+    Mirrors the culinary agent notebook's ingredient suggestion step.
+    Returns a list of RecipeIngredientSuggestions, one per recipe.
+    """
+    all_suggestions = []
+
+    for recipe in candidates.recipes:
+        prominent_ingredients = set(
+            ing_name.lower().strip()
+            for combo in recipe.flavor_profile
+            for ing_name in combo.ingredients
+        )
+
+        odorant_results = pairing_search(
+            f"Which odorants do these ingredients have {prominent_ingredients}"
+        )
+        misc_results = pairing_search(
+            f"What combinations are good with these ingredients {prominent_ingredients}"
+        )
+
+        prompt = f"""
+      {INGREDIENT_SUGGESTION_PROMPT}
+
+      Dish name: {recipe.recipe_name}
+
+      Dish ingredients:
+      {prominent_ingredients}
+
+      Odorant context:
+      {odorant_results}
+
+      Additional pairing context:
+      {misc_results}
+
+      Kitchen state:
+      {KITCHEN_STATE}
+    """
+
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=800,
+        )
+
+        text = response.choices[0].message.content.strip()
+        try:
+            text = clean_llm_json(text)
+            data = json.loads(text)
+            suggestion = RecipeIngredientSuggestions.model_validate(data)
+            all_suggestions.append(suggestion)
+        except (json.JSONDecodeError, Exception):
+            # Fallback: empty suggestions so the pipeline can continue
+            all_suggestions.append(
+                RecipeIngredientSuggestions(
+                    recipe_name=recipe.recipe_name,
+                    kitchen_state_additions=[],
+                    external_additions=[],
+                )
+            )
+
+    return all_suggestions
+
+
+def improve_recipes(
+    candidates: RecipeCandidates,
+    all_suggestions: list,
+    temperature: float = 0.3,
+) -> list:
+    """Create enhanced versions of each recipe using the suggested additions.
+
+    Mirrors the culinary agent notebook's recipe improvement step.
+    Returns a list of RecipeEnhanced objects.
+    """
+    improved = []
+
+    for recipe, additions in zip(candidates.recipes, all_suggestions):
+        added_ingredients = [
+            a.ingredient for a in additions.kitchen_state_additions
+        ]
+
+        prompt = f"""
+      {RECIPE_IMPROVEMENT_PROMPT}
+
+      Original recipe name:
+      {recipe.recipe_name}
+
+      Original ingredients:
+      {recipe.ingredients_required}
+
+      Ingredients to add:
+      {added_ingredients}
+    """
+
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+        )
+
+        text = response.choices[0].message.content.strip()
+        try:
+            text = clean_llm_json(text)
+            data = json.loads(text)
+            enhanced = RecipeEnhanced.model_validate(data)
+            improved.append(enhanced)
+        except (json.JSONDecodeError, Exception):
+            # Fallback: wrap the original recipe as an enhanced recipe
+            improved.append(
+                RecipeEnhanced(
+                    recipe_name=recipe.recipe_name,
+                    description=recipe.description,
+                    enhancements_description="No enhancements applied.",
+                    ingredients_required=recipe.ingredients_required,
+                    steps=recipe.steps,
+                )
+            )
+
+    return improved
+
+
+def _odorant_score(ingredients: list, food_to_odorants: dict) -> float:
+    """Score based on shared odorant overlap between ingredient names.
+
+    Mirrors the culinary agent notebook's odorant_score function.
+    """
+    odorants = []
+    for ing in ingredients:
+        name = ing.name.lower() if hasattr(ing, "name") else str(ing).lower()
+        for o in _fuzzy_odorant_lookup(name, food_to_odorants):
+            if isinstance(o, dict):
+                odorants.append(o["name"])
+
+    unique = set(odorants)
+    overlap = len(odorants) - len(unique)
+    return overlap / max(len(unique), 1)
+
+
+def _rag_score(ingredient1: str, ingredient2: str) -> float:
+    """Score based on co-occurrence in cooking literature via RAG search.
+
+    Mirrors the culinary agent notebook's rag_score function.
+    """
+    ingredient1 = ingredient1.lower()
+    ingredient2 = ingredient2.lower()
+
+    query = f"flavor pairing between {ingredient1} and {ingredient2}"
+    results = recipe_search(query)
+
+    count = 0
+    for result in results:
+        if "text" in result:
+            result_text_lower = result["text"].lower()
+            if ingredient1 in result_text_lower and ingredient2 in result_text_lower:
+                count += 1
+
+    return count
+
+
+def _llm_score(ingredients: list, steps: list) -> float:
+    """Ask LLM to evaluate dish for flavor quality on a 0-1 scale.
+
+    Mirrors the culinary agent notebook's llm_score function.
+    """
+    prompt = f"""
+  {EVAL_PROMPT}
+
+  dish ingredients:
+  {ingredients}
+
+  dish steps:
+  {steps}
+  """
+
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+    )
+
+    score_text = response.choices[0].message.content.strip()
+    try:
+        return int(score_text) / 100
+    except ValueError:
+        return 0.5
+
+
+def optimize_and_select_best(
+    candidates: RecipeCandidates,
+    food_to_odorants: dict,
+    temperature: float = 0.8,
+) -> tuple:
+    """Run the full optimization pipeline and return the best recipe.
+
+    Pipeline (mirrors culinary agent notebook):
+    1. Suggest ingredient additions for each candidate
+    2. Create improved/enhanced versions of each recipe
+    3. Score each improved recipe: rag_score*30 + odorant_score*30 + llm_score*40
+    4. Return (best_enhanced_recipe, all_suggestions, best_index)
+
+    The returned RecipeEnhanced is converted back to a Recipe-compatible object
+    for downstream use in the learning loop.
+    """
+    # Step 1: Suggest additions
+    all_suggestions = suggest_recipe_additions(candidates, temperature=0.0)
+
+    # Step 2: Improve recipes
+    improved_recipes = improve_recipes(candidates, all_suggestions, temperature=0.3)
+
+    # Step 3: Score each improved recipe
+    scores = []
+    for enhanced in improved_recipes:
+        ingredients = enhanced.ingredients_required
+        num_pairs = 0
+        total_rag = 0.0
+        total_odorant = 0.0
+
+        ing_names = [ing.name.lower() for ing in ingredients]
+        for i in range(len(ing_names)):
+            for j in range(i + 1, len(ing_names)):
+                num_pairs += 1
+                total_rag += _rag_score(ing_names[i], ing_names[j])
+                total_odorant += _odorant_score(
+                    [ingredients[i], ingredients[j]], food_to_odorants
+                )
+
+        avg_rag = total_rag / max(num_pairs, 1)
+        avg_odorant = total_odorant / max(num_pairs, 1)
+        current_llm = _llm_score(ingredients, enhanced.steps)
+
+        overall = avg_rag * 30 + avg_odorant * 30 + current_llm * 40
+        scores.append(overall)
+
+    # Step 4: Pick the best
+    best_index = scores.index(max(scores)) if scores else 0
+    best_enhanced = improved_recipes[best_index] if improved_recipes else None
+
+    return best_enhanced, all_suggestions, best_index
+
+
+def _enhanced_to_recipe(enhanced: RecipeEnhanced, original: Recipe) -> Recipe:
+    """Convert a RecipeEnhanced back to a Recipe for the learning loop.
+
+    Preserves the original's fit_to_intent and flavor_profile since the
+    enhanced recipe doesn't carry those fields.
+    """
+    return Recipe(
+        recipe_name=enhanced.recipe_name,
+        description=enhanced.description,
+        ingredients_required=enhanced.ingredients_required,
+        fit_to_intent=original.fit_to_intent,
+        flavor_profile=original.flavor_profile,
+        steps=enhanced.steps,
+    )
+
+
 # ── Main Orchestrator ─────────────────────────────────────────────────────────
 
 
@@ -1715,6 +2070,7 @@ def run_agent(
     world_model_path: str = "world_model.json",
     self_model_path: str = "self_model.json",
     log_path: str = "run_log.jsonl",
+    temperature: float = 0.8,
 ) -> dict:
     """Execute the full training loop and return a structured run record.
 
@@ -1725,7 +2081,7 @@ def run_agent(
     4. Determine bias strings based on mode
     5. Generate candidate recipes
     6. Validate and fix recipes
-    7. Pick first recipe
+    7. Optimize recipes (suggest additions, improve, score) and pick the best
     8. Predict taste via WorldModel
     9. Evaluate actual taste via heuristic
     10. Compute prediction error
@@ -1746,7 +2102,7 @@ def run_agent(
     select_mode(mode)
 
     # ── 3. Parse intent ──────────────────────────────────────────────────
-    intent = parse_intent(user_input, schema)
+    intent = parse_intent(user_input, schema, temperature=temperature)
     if intent is None:
         intent = {
             "hard_constraints": {},
@@ -1773,13 +2129,17 @@ def run_agent(
         sm_bias = self_model.to_prompt_context()
 
     # ── 5. Generate candidate recipes ────────────────────────────────────
-    candidates = generate_recipes(intent, user_input, wm_bias=wm_bias, sm_bias=sm_bias)
+    candidates = generate_recipes(
+        intent, user_input, wm_bias=wm_bias, sm_bias=sm_bias,
+        temperature=temperature,
+    )
 
     if candidates is None:
         # Retry up to 2 more times (3 total attempts)
         for _ in range(2):
             candidates = generate_recipes(
-                intent, user_input, wm_bias=wm_bias, sm_bias=sm_bias
+                intent, user_input, wm_bias=wm_bias, sm_bias=sm_bias,
+                temperature=temperature,
             )
             if candidates is not None:
                 break
@@ -1814,19 +2174,27 @@ def run_agent(
 
     # ── 6. Validate and fix recipes ──────────────────────────────────────
     candidates = validate_and_fix_recipes(
-        candidates, intent, user_input, wm_bias=wm_bias, sm_bias=sm_bias
+        candidates, intent, user_input, wm_bias=wm_bias, sm_bias=sm_bias,
+        temperature=temperature,
     )
 
-    # ── 7. Pick the first recipe ─────────────────────────────────────────
-    recipe = candidates.recipes[0]
+    # ── 7. Optimize recipes and pick the best ─────────────────────────
+    with open(FOOD_TO_ODORANT_PATH, "r") as f:
+        food_to_odorants = json.load(f)
+
+    best_enhanced, all_suggestions, best_index = optimize_and_select_best(
+        candidates, food_to_odorants, temperature=temperature,
+    )
+
+    # Convert the enhanced recipe back to a Recipe for the learning loop,
+    # preserving fit_to_intent and flavor_profile from the original candidate.
+    original_recipe = candidates.recipes[best_index]
+    recipe = _enhanced_to_recipe(best_enhanced, original_recipe)
 
     # ── 8. Predict taste ─────────────────────────────────────────────────
     predicted_taste = predict_taste(world_model, recipe)
 
     # ── 9. Evaluate actual taste ─────────────────────────────────────────
-    with open(FOOD_TO_ODORANT_PATH, "r") as f:
-        food_to_odorants = json.load(f)
-
     actual_taste = evaluate_taste(recipe, intent, food_to_odorants)
 
     # ── 10. Compute error ────────────────────────────────────────────────
