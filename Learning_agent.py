@@ -5,6 +5,11 @@ Re-implements the baseline culinary pipeline (intent parsing, recipe generation,
 constraint validation, RAG search, odorant pairing) and adds WorldModel /
 SelfModel learning on top.  Shares only on-disk data files with the baseline
 Culinary_agent.ipynb — no code imports from the notebook.
+
+Supports two backends:
+  - "groq": Remote API (Llama 3.3 70B via Groq) — preferences via prompt injection
+  - "local": Local MLX model (Llama 3.1 8B) with LoRA adapters — preferences
+    encoded in trainable model weights
 """
 
 # ── stdlib ────────────────────────────────────────────────────────────────────
@@ -16,7 +21,6 @@ import tempfile
 # ── third-party ───────────────────────────────────────────────────────────────
 import numpy as np
 import faiss
-from groq import Groq
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 from typing import List, Optional, Union
@@ -24,11 +28,44 @@ from dotenv import load_dotenv
 
 # ── env ───────────────────────────────────────────────────────────────────────
 load_dotenv()
-os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY", "YOUR_GROQ_API_KEY_HERE")
 
-# ── Groq client & model ──────────────────────────────────────────────────────
-client = Groq()
-MODEL_NAME = "llama-3.3-70b-versatile"
+# ── Backend selection ─────────────────────────────────────────────────────────
+# Set LEARNING_AGENT_BACKEND=local to use local MLX model
+# Default is "groq" for backward compatibility
+BACKEND_TYPE = os.getenv("LEARNING_AGENT_BACKEND", "groq")
+
+if BACKEND_TYPE == "groq":
+    from groq import Groq
+    os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY", "YOUR_GROQ_API_KEY_HERE")
+    client = Groq()
+    MODEL_NAME = "llama-3.3-70b-versatile"
+    _llm_backend = None  # initialized lazily
+else:
+    client = None
+    MODEL_NAME = None
+
+from local_model import LLMBackend
+
+def _get_backend() -> LLMBackend:
+    """Get or create the LLM backend singleton."""
+    global _llm_backend
+    if _llm_backend is None:
+        if BACKEND_TYPE == "groq":
+            _llm_backend = LLMBackend(
+                backend="groq",
+                model_name="llama-3.3-70b-versatile",
+            )
+        elif BACKEND_TYPE == "local":
+            _llm_backend = LLMBackend(
+                backend="local",
+                model_path=os.getenv("LOCAL_MODEL_PATH", "models/llama-3.1-8b-instruct-mlx"),
+                adapter_dir=os.getenv("ADAPTER_DIR", "adapters"),
+            )
+        else:
+            raise ValueError(f"Unknown backend: {BACKEND_TYPE}")
+    return _llm_backend
+
+_llm_backend = None
 
 # ── Embedding model reference (lazy-loaded by RAG functions, not at import) ──
 EMBEDDING_MODEL_NAME = "BAAI/bge-large-en-v1.5"
@@ -1212,9 +1249,9 @@ def clean_llm_json(text: str) -> str:
 
 
 def parse_intent(user_input: str, schema: dict, temperature: float = 0.8) -> dict:
-    """Call Groq LLM with SYSTEM_PROMPT to extract intent from user input.
+    """Call LLM to extract intent from user input.
 
-    Uses the module-level ``client``, ``MODEL_NAME``, and ``SYSTEM_PROMPT``.
+    Uses the configured backend (Groq API or local MLX model).
     The *schema* dict is included in the prompt so the LLM knows the expected
     structure.  The response is cleaned with :func:`clean_llm_json` and parsed
     into a dict via Pydantic validation (pruning ``None`` fields).
@@ -1231,17 +1268,13 @@ User request:
 {user_input}
 """
 
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
+    backend = _get_backend()
+    text = backend.generate(
+        prompt=prompt,
+        system_prompt=SYSTEM_PROMPT,
         temperature=temperature,
         max_tokens=200,
     )
-
-    text = response.choices[0].message.content.strip()
 
     _SPICE_LABEL_MAP = {
         "none": 0.0, "mild": 0.25, "medium": 0.5, "high": 0.75, "extreme": 1.0,
@@ -1318,17 +1351,13 @@ Prompt:
 {RECIPE_GENERATION_PROMPT}
 """
 
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
+    backend = _get_backend()
+    text = backend.generate(
+        prompt=prompt,
+        system_prompt=SYSTEM_PROMPT,
         temperature=temperature,
         max_tokens=4096,
     )
-
-    text = response.choices[0].message.content.strip()
 
     try:
         text = clean_llm_json(text)
@@ -1842,14 +1871,14 @@ def suggest_recipe_additions(
       {KITCHEN_STATE}
     """
 
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
+        response = _get_backend().generate(
+            prompt=prompt,
+            system_prompt="",
             temperature=temperature,
             max_tokens=800,
         )
 
-        text = response.choices[0].message.content.strip()
+        text = response
         try:
             text = clean_llm_json(text)
             data = json.loads(text)
@@ -1898,13 +1927,13 @@ def improve_recipes(
       {added_ingredients}
     """
 
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
+        response = _get_backend().generate(
+            prompt=prompt,
+            system_prompt="",
             temperature=temperature,
         )
 
-        text = response.choices[0].message.content.strip()
+        text = response
         try:
             text = clean_llm_json(text)
             data = json.loads(text)
@@ -1978,13 +2007,13 @@ def _llm_score(ingredients: list, steps: list) -> float:
   {steps}
   """
 
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[{"role": "user", "content": prompt}],
+    response = _get_backend().generate(
+        prompt=prompt,
+        system_prompt="",
         temperature=0.3,
     )
 
-    score_text = response.choices[0].message.content.strip()
+    score_text = response
     try:
         return int(score_text) / 100
     except ValueError:
@@ -2191,6 +2220,23 @@ def run_agent(
     original_recipe = candidates.recipes[best_index]
     recipe = _enhanced_to_recipe(best_enhanced, original_recipe)
 
+    # ── 7b. Preference-based re-ranking (local backend only) ─────────
+    # When using the local model with a trained preference head, re-rank
+    # candidates using the learned preference scores. This is a structural
+    # preference mechanism — the model's weights determine the choice,
+    # not prompt text.
+    backend = _get_backend()
+    if backend.has_preference_head and mode != "baseline":
+        scored = []
+        for i, r in enumerate(candidates.recipes):
+            recipe_text = json.dumps(r.model_dump(), indent=2)
+            pref_score = backend.score_recipe(recipe_text)
+            scored.append((i, pref_score))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        best_pref_idx = scored[0][0]
+        # Use preference-selected recipe instead of optimization-selected
+        recipe = candidates.recipes[best_pref_idx]
+
     # ── 8. Predict taste ─────────────────────────────────────────────────
     predicted_taste = predict_taste(world_model, recipe)
 
@@ -2213,6 +2259,20 @@ def run_agent(
         self_model.update(recipe, intent, learning_rate)
         self_model.save()
     # baseline: skip all updates
+
+    # ── 11b. Train LoRA adapters (local backend only) ────────────────────
+    # When using the local model, the taste heuristic score trains the
+    # preference head and LoRA adapters. This encodes preferences in the
+    # model weights themselves, not in external data structures.
+    adapter_loss = None
+    if backend.has_training and mode != "baseline":
+        recipe_text = json.dumps(recipe.model_dump(), indent=2)
+        adapter_loss = backend.train_step(
+            recipe_text=recipe_text,
+            taste_score=actual_taste,
+            lr=learning_rate * 0.01,  # adapter LR is smaller than model LR
+        )
+        backend.save_adapters()
 
     # ── 12. Determine run number ─────────────────────────────────────────
     run_number = 1
@@ -2240,6 +2300,8 @@ def run_agent(
             "cuisine_affinity": self_model.cuisine_affinity,
         },
         "convergence_flag": convergence_flag,
+        "backend": BACKEND_TYPE,
+        "adapter_loss": adapter_loss,
     }
 
     # ── 15. Log the run ──────────────────────────────────────────────────

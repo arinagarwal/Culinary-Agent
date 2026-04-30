@@ -42,6 +42,7 @@ from Learning_agent import (
     evaluate_taste,
     schema,
     FOOD_TO_ODORANT_PATH,
+    _get_backend,
 )
 
 
@@ -153,11 +154,24 @@ def train_step(
         self_model.update(recipe, intent, learning_rate)
         self_model.save()
 
+    # Train LoRA adapters if using local backend
+    adapter_loss = None
+    backend = _get_backend()
+    if backend.has_training and mode != "baseline":
+        recipe_text = json.dumps(recipe.model_dump(), indent=2)
+        adapter_loss = backend.train_step(
+            recipe_text=recipe_text,
+            taste_score=actual_taste,
+            lr=learning_rate * 0.01,
+        )
+        backend.save_adapters()
+
     return {
         "phase": "train",
         "prompt": user_input,
         "recipe": recipe.model_dump(),
         "actual_taste": actual_taste,
+        "adapter_loss": adapter_loss,
         "updated_self_model": {
             "spice_preference": self_model.spice_preference,
             "health_bias": self_model.health_bias,
@@ -218,6 +232,17 @@ def eval_step(
         temperature=temperature,
     )
     recipe = candidates.recipes[0]
+
+    # Preference-based re-ranking with local backend
+    backend = _get_backend()
+    if backend.has_preference_head and mode != "baseline":
+        scored = []
+        for i, r in enumerate(candidates.recipes):
+            recipe_text = json.dumps(r.model_dump(), indent=2)
+            pref_score = backend.score_recipe(recipe_text)
+            scored.append((i, pref_score))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        recipe = candidates.recipes[scored[0][0]]
 
     with open(FOOD_TO_ODORANT_PATH) as f:
         food_to_odorants = json.load(f)
