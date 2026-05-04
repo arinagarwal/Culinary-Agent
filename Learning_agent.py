@@ -20,11 +20,19 @@ import tempfile
 
 # ── third-party ───────────────────────────────────────────────────────────────
 import numpy as np
-import faiss
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 from typing import List, Optional, Union
 from dotenv import load_dotenv
+
+# faiss is lazy-loaded to avoid conflicts with PyTorch on Apple Silicon
+_faiss = None
+def _get_faiss():
+    global _faiss
+    if _faiss is None:
+        import faiss
+        _faiss = faiss
+    return _faiss
 
 # ── env ───────────────────────────────────────────────────────────────────────
 load_dotenv()
@@ -58,8 +66,9 @@ def _get_backend() -> LLMBackend:
         elif BACKEND_TYPE == "local":
             _llm_backend = LLMBackend(
                 backend="local",
-                model_path=os.getenv("LOCAL_MODEL_PATH", "models/llama-3.1-8b-instruct-mlx"),
+                model_id=os.getenv("LOCAL_MODEL_PATH", "meta-llama/Meta-Llama-3.1-8B-Instruct"),
                 adapter_dir=os.getenv("ADAPTER_DIR", "adapters"),
+                hf_token=os.getenv("HF_TOKEN"),
             )
         else:
             raise ValueError(f"Unknown backend: {BACKEND_TYPE}")
@@ -768,6 +777,17 @@ class WorldModel:
             reverse=True,
         )[:k]
 
+    def get_penalized_ingredients(self, threshold: float = -0.01) -> list[tuple[str, float]]:
+        """Return ingredients with weights below *threshold* (learned dislikes).
+
+        These are ingredients the agent has learned to avoid based on
+        negative prediction errors in past recipes.
+        """
+        return sorted(
+            [(name, w) for name, w in self.ingredient_weights.items() if w < threshold],
+            key=lambda item: item[1],
+        )
+
 # ── SelfModel ────────────────────────────────────────────────────────────────
 
 
@@ -1240,12 +1260,34 @@ def clean_llm_json(text: str) -> str:
     """Strip markdown code fences from LLM output and return clean JSON string.
 
     Handles ```json ... ``` and ``` ... ``` patterns.
+    Also converts Python dict syntax (single quotes, None, True/False)
+    to valid JSON for smaller models that output Python literals.
 
     Requirements: 12.2
     """
     text = re.sub(r"```json", "", text)
     text = re.sub(r"```", "", text)
-    return text.strip()
+    text = text.strip()
+
+    # If it looks like a Python dict (single quotes), try to convert
+    if "'" in text and '"' not in text:
+        try:
+            import ast
+            parsed = ast.literal_eval(text)
+            return json.dumps(parsed)
+        except (ValueError, SyntaxError):
+            pass
+
+    # Replace Python-style None/True/False with JSON equivalents
+    text = re.sub(r'\bnull\b', 'null', text)
+    text = re.sub(r'\bNone\b', 'null', text)
+    text = re.sub(r'\bTrue\b', 'true', text)
+    text = re.sub(r'\bFalse\b', 'false', text)
+    # Single quotes to double quotes (simple cases)
+    if text.startswith("{") and "'" in text and '"' not in text:
+        text = text.replace("'", '"')
+
+    return text
 
 
 def parse_intent(user_input: str, schema: dict, temperature: float = 0.8) -> dict:
@@ -1308,20 +1350,10 @@ def generate_recipes(
     sm_bias: str = None,
     temperature: float = 0.8,
 ) -> RecipeCandidates:
-    """Generate 3 candidate recipes via Groq LLM.
+    """Generate candidate recipes via LLM.
 
-    Constructs a prompt from the user intent, user input, kitchen state, and
-    the standard ``RECIPE_GENERATION_PROMPT``.  When *wm_bias* or *sm_bias*
-    are provided (non-``None`` / non-empty strings), they are injected into
-    the prompt so the LLM can bias its output accordingly.
-
-    *wm_bias* — WorldModel ingredient ranking (top ingredients by weight).
-    *sm_bias* — SelfModel preference context (from ``to_prompt_context()``).
-
-    Returns a :class:`RecipeCandidates` instance, or ``None`` if the LLM
-    returns unparseable JSON.
-
-    Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 12.2
+    When using the local backend, generates 1 recipe for speed.
+    When using Groq, generates 3 as before.
     """
 
     # -- Build optional bias section ------------------------------------------
@@ -1337,6 +1369,18 @@ def generate_recipes(
             f"{sm_bias}\n"
         )
 
+    backend = _get_backend()
+    # Use fewer recipes for local model (speed)
+    if backend.backend_type == "local":
+        recipe_count_instruction = RECIPE_GENERATION_PROMPT.replace(
+            "generate 3 vastly different recipes",
+            "generate 1 recipe"
+        )
+        max_tok = 1200
+    else:
+        recipe_count_instruction = RECIPE_GENERATION_PROMPT
+        max_tok = 4096
+
     prompt = f"""
 User request:
 {user_input}
@@ -1348,15 +1392,14 @@ Kitchen state:
 {KITCHEN_STATE}
 {bias_section}
 Prompt:
-{RECIPE_GENERATION_PROMPT}
+{recipe_count_instruction}
 """
 
-    backend = _get_backend()
     text = backend.generate(
         prompt=prompt,
         system_prompt=SYSTEM_PROMPT,
         temperature=temperature,
-        max_tokens=4096,
+        max_tokens=max_tok,
     )
 
     try:
@@ -1472,7 +1515,7 @@ def validate_and_fix_recipes(
 
     Requirements: 11.2, 12.5
     """
-    MAX_RETRIES = 3
+    MAX_RETRIES = 1
 
     existing_names = set(
         r.recipe_name.lower().strip() for r in candidates.recipes
@@ -1544,7 +1587,7 @@ def _load_faiss_index(index_name: str):
                 raise FileNotFoundError(
                     f"FAISS index not found: {path}. Ensure rag_docs/ contains {index_name}."
                 )
-            _recipe_faiss_index = faiss.read_index(path)
+            _recipe_faiss_index = _get_faiss().read_index(path)
         return _recipe_faiss_index
 
     if index_name == "pairing_faiss.index":
@@ -1554,7 +1597,7 @@ def _load_faiss_index(index_name: str):
                 raise FileNotFoundError(
                     f"FAISS index not found: {path}. Ensure rag_docs/ contains {index_name}."
                 )
-            _pairing_faiss_index = faiss.read_index(path)
+            _pairing_faiss_index = _get_faiss().read_index(path)
         return _pairing_faiss_index
 
     raise ValueError(f"Unknown FAISS index name: {index_name}")

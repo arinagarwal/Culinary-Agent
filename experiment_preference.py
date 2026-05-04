@@ -92,10 +92,17 @@ def train_step(
     self_model: SelfModel,
     learning_rate: float,
     temperature: float,
+    banned_ingredients: list[str] = None,
 ) -> dict:
     """Single training step: generate recipe, evaluate, update weights.
 
-    No prediction involved — the heuristic score directly drives learning.
+    When *banned_ingredients* is provided, the training signal for the LoRA
+    adapters is binary: 1.0 if the recipe contains NONE of the banned
+    ingredients, 0.0 if ANY appear. The heuristic taste score is still
+    computed and logged, but the adapter training uses the binary signal.
+    This tests whether LoRA training alone can teach the model to avoid
+    specific ingredients.
+
     Returns the run record for logging.
     """
     # Parse intent
@@ -103,7 +110,7 @@ def train_step(
     if intent is None:
         intent = {"hard_constraints": {}, "soft_objectives": {}, "preferences": {}}
 
-    # Build bias strings based on mode
+    # Build bias strings based on mode (NO avoidance hints — purely structural)
     wm_bias = None
     sm_bias = None
     if mode in ("world_model_only", "full_model"):
@@ -136,15 +143,21 @@ def train_step(
     )
     recipe = candidates.recipes[0]
 
-    # Evaluate taste via heuristic (the "ground truth" signal)
+    # Evaluate taste via heuristic (logged but may not be the training signal)
     with open(FOOD_TO_ODORANT_PATH) as f:
         food_to_odorants = json.load(f)
     actual_taste = evaluate_taste(recipe, intent, food_to_odorants)
 
-    # Update models — use actual_taste directly as the learning signal
+    # Compute the banned-ingredient reward signal
+    banned_reward = None
+    if banned_ingredients:
+        banned_set = {b.lower().strip() for b in banned_ingredients}
+        recipe_ings = {ing.name.lower().strip() for ing in recipe.ingredients_required}
+        contains_banned = bool(recipe_ings & banned_set)
+        banned_reward = 0.0 if contains_banned else 1.0
+
+    # Update models
     if mode in ("world_model_only", "full_model"):
-        # Error = actual_taste - predicted (but we use actual_taste as target,
-        # so error = actual_taste - current_prediction)
         predicted = world_model.predict_taste(recipe)
         error = actual_taste - predicted
         world_model.update(recipe, error, learning_rate)
@@ -154,14 +167,15 @@ def train_step(
         self_model.update(recipe, intent, learning_rate)
         self_model.save()
 
-    # Train LoRA adapters if using local backend
+    # Train LoRA adapters — use banned_reward if available, else taste score
     adapter_loss = None
     backend = _get_backend()
     if backend.has_training and mode != "baseline":
         recipe_text = json.dumps(recipe.model_dump(), indent=2)
+        training_signal = banned_reward if banned_reward is not None else actual_taste
         adapter_loss = backend.train_step(
             recipe_text=recipe_text,
-            taste_score=actual_taste,
+            taste_score=training_signal,
             lr=learning_rate * 0.01,
         )
         backend.save_adapters()
@@ -171,6 +185,7 @@ def train_step(
         "prompt": user_input,
         "recipe": recipe.model_dump(),
         "actual_taste": actual_taste,
+        "banned_reward": banned_reward,
         "adapter_loss": adapter_loss,
         "updated_self_model": {
             "spice_preference": self_model.spice_preference,
@@ -277,10 +292,14 @@ def run_condition(
     eval_rounds: int = 3,
     learning_rate: float = 0.05,
     api_delay: float = 1.0,
+    banned_ingredients: list[str] = None,
 ) -> dict:
     """Run one full condition: train then eval.
 
-    Returns structured results for this condition.
+    When *banned_ingredients* is provided, the LoRA training signal is binary:
+    1.0 if the recipe avoids all banned ingredients, 0.0 otherwise.
+    During eval, no filtering or hints are applied — we purely observe
+    whether the trained model avoids those ingredients on its own.
     """
     condition_name = f"{mode}__{init}__temp{temperature}"
     trial_dir = os.path.join(output_dir, condition_name, f"trial_{trial:02d}")
@@ -321,6 +340,7 @@ def run_condition(
                     self_model=self_model,
                     learning_rate=learning_rate,
                     temperature=temperature,
+                    banned_ingredients=banned_ingredients,
                 )
                 result["round"] = round_num
                 result["step"] = step
@@ -401,10 +421,13 @@ def run_full_experiment(
     learning_rate: float = 0.05,
     api_delay: float = 1.0,
     output_dir: str = "experiments/preference",
+    banned_ingredients: list[str] = None,
 ) -> dict:
     """Run the full factorial experiment.
 
     Iterates over all combinations of (mode × init × temperature × trial).
+    When *banned_ingredients* is provided, the LoRA training signal penalizes
+    recipes containing those ingredients (binary: 1.0 if clean, 0.0 if not).
     """
     if modes is None:
         modes = MODES
@@ -428,6 +451,7 @@ def run_full_experiment(
         "learning_rate": learning_rate,
         "train_prompts": TRAINING_PROMPTS,
         "eval_prompts": EVAL_PROMPTS,
+        "banned_ingredients": banned_ingredients,
         "timestamp": timestamp,
     }
     with open(os.path.join(experiment_dir, "config.json"), "w") as f:
@@ -465,6 +489,7 @@ def run_full_experiment(
                 eval_rounds=eval_rounds,
                 learning_rate=learning_rate,
                 api_delay=api_delay,
+                banned_ingredients=banned_ingredients,
             )
             all_results.append(result)
 
@@ -620,6 +645,91 @@ def print_experiment_summary(analysis: dict) -> None:
               f"{row['reuse_rate_mean']:>7.3f} {row['hhi_mean']:>7.3f}")
 
 
+# ── Penalization Analysis ─────────────────────────────────────────────────────
+
+
+def analyze_penalization(results: list[dict], banned_ingredients: list[str]) -> dict:
+    """Measure whether banned ingredients appear less in eval-phase recipes.
+
+    For each condition, counts how often banned ingredients appear in
+    eval recipes. Compares trained modes against baseline to see if
+    LoRA training reduced their frequency.
+    """
+    from collections import defaultdict
+    import numpy as np
+
+    banned_set = {b.lower().strip() for b in banned_ingredients}
+
+    by_condition = defaultdict(list)
+    for r in results:
+        key = (r["mode"], r["init"], r["temperature"])
+        by_condition[key].append(r)
+
+    rows = []
+    for (mode, init, temp), condition_results in sorted(by_condition.items()):
+        trial_rates = []
+        for cr in condition_results:
+            eval_log = cr.get("eval_log", [])
+            valid = [e for e in eval_log if "error" not in e]
+            if not valid:
+                continue
+
+            total_recipes = len(valid)
+            recipes_with_banned = 0
+            total_banned_occurrences = 0
+
+            for e in valid:
+                recipe = e.get("recipe", {})
+                ingredients = recipe.get("ingredients_required", [])
+                ing_names = {ing.get("name", "").lower().strip() for ing in ingredients}
+                found = ing_names & banned_set
+                if found:
+                    recipes_with_banned += 1
+                    total_banned_occurrences += len(found)
+
+            rate = recipes_with_banned / total_recipes if total_recipes > 0 else 0.0
+            trial_rates.append(rate)
+
+        rows.append({
+            "mode": mode,
+            "init": init,
+            "temperature": temp,
+            "n_trials": len(trial_rates),
+            "banned_appearance_rate_mean": float(np.mean(trial_rates)) if trial_rates else 0.0,
+            "banned_appearance_rate_std": float(np.std(trial_rates)) if trial_rates else 0.0,
+            "trial_rates": trial_rates,
+        })
+
+    rows.sort(key=lambda x: x["banned_appearance_rate_mean"])
+    return {"banned_ingredients": banned_ingredients, "conditions": rows}
+
+
+def print_penalization_report(analysis: dict) -> None:
+    """Print the penalization analysis — did training reduce banned ingredient usage?"""
+    print(f"\n{'='*80}")
+    print(f"INGREDIENT PENALIZATION ANALYSIS")
+    print(f"Banned: {', '.join(analysis['banned_ingredients'])}")
+    print(f"{'='*80}")
+    print(f"{'Mode':<20} {'Init':<7} {'Temp':<6} "
+          f"{'Banned Rate':>12} {'±Std':>7} {'Interpretation'}")
+    print("-" * 80)
+
+    for row in analysis["conditions"]:
+        rate = row["banned_appearance_rate_mean"]
+        if rate < 0.1:
+            interp = "strong avoidance"
+        elif rate < 0.3:
+            interp = "moderate avoidance"
+        elif rate < 0.5:
+            interp = "weak avoidance"
+        else:
+            interp = "no avoidance"
+
+        print(f"{row['mode']:<20} {row['init']:<7} {row['temperature']:<6.1f} "
+              f"{rate:>12.1%} {row['banned_appearance_rate_std']:>7.1%} "
+              f"{interp}")
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
@@ -634,6 +744,11 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=0.05)
     parser.add_argument("--delay", type=float, default=1.0)
     parser.add_argument("--output", default="experiments/preference")
+    parser.add_argument(
+        "--ban", nargs="+", default=None,
+        help="Ingredients to penalize during training (e.g. --ban garlic onion). "
+             "Training reward is 1.0 if recipe avoids ALL banned ingredients, 0.0 otherwise.",
+    )
     args = parser.parse_args()
 
     result = run_full_experiment(
@@ -646,10 +761,16 @@ if __name__ == "__main__":
         learning_rate=args.lr,
         api_delay=args.delay,
         output_dir=args.output,
+        banned_ingredients=args.ban,
     )
 
     analysis = analyze_experiment(result["results"])
     print_experiment_summary(analysis)
+
+    # If banned ingredients were specified, run the penalization analysis
+    if args.ban:
+        pen_analysis = analyze_penalization(result["results"], args.ban)
+        print_penalization_report(pen_analysis)
 
     # Save analysis
     analysis_path = os.path.join(result["experiment_dir"], "analysis.json")

@@ -1,0 +1,4 @@
+# file: /Users/agararin/Culinary Agent/local_model.py
+# hypothesis_version: 6.137.1
+
+[0.0, 0.0001, 0.001, 0.05, 0.8, 128, 512, 4096, 'HF_TOKEN', 'Model not loaded.', 'adapter_config.json', 'adapters', 'auto', 'content', 'cpu', 'cuda', 'device_map', 'dtype', 'generated_text', 'groq', 'local', 'lora', 'lora_A', 'lora_B', 'low_cpu_mem_usage', 'lr', 'model_name', 'params', 'preference_head.pt', 'pt', 'q_proj', 'quantization_config', 'role', 'system', 'text-generation', 'user', 'v_proj']

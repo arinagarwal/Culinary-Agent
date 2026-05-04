@@ -1,0 +1,47 @@
+{
+  "modes": [
+    "baseline",
+    "full_model"
+  ],
+  "initializations": [
+    "zero"
+  ],
+  "temperatures": [
+    0.8
+  ],
+  "num_trials": 1,
+  "train_rounds": 1,
+  "eval_rounds": 1,
+  "learning_rate": 0.05,
+  "train_prompts": [
+    "I want a creamy mushroom risotto",
+    "Make me a spicy Korean bibimbap",
+    "I want a fresh Greek salad with olives",
+    "Give me a rich French onion soup",
+    "I want a tangy Indian chicken tikka masala",
+    "Make me a simple American cheeseburger",
+    "I want a light Vietnamese pho with herbs",
+    "Give me a hearty Irish beef stew",
+    "I want a sweet Japanese teriyaki salmon",
+    "Make me a smoky Texan BBQ pulled pork sandwich",
+    "I want a refreshing Brazilian acai bowl",
+    "Give me a classic British fish and chips",
+    "I want a fragrant Moroccan tagine with lamb",
+    "Make me a crispy Chinese kung pao chicken",
+    "I want a comforting Italian minestrone soup"
+  ],
+  "eval_prompts": [
+    "I want a spicy Thai curry with chicken",
+    "Make me a healthy Mediterranean salad with feta",
+    "I want a quick Italian pasta with garlic and basil",
+    "Give me a spicy Mexican burrito bowl with beans",
+    "I want a light Japanese miso soup with tofu",
+    "Make me a rich creamy pasta carbonara",
+    "I want a fresh summer vegetable stir fry",
+    "Give me a warm comforting chicken noodle soup"
+  ],
+  "banned_ingredients": [
+    "garlic"
+  ],
+  "timestamp": "20260502_173855"
+}

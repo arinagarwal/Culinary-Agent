@@ -1,0 +1,4 @@
+# file: /Users/agararin/Culinary Agent/experiment_helpers.py
+# hypothesis_version: 6.137.1
+
+[0.0, 1.0, 'banned_found', 'butter', 'garlic', 'heavy cream', 'metadata', 'per_ingredient_count', 'recipes', 'recipes_clean', 'recipes_with_banned', 'soy sauce', 'sugar', 'summary', 'total_recipes']

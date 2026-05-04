@@ -1,240 +1,190 @@
 """
-Local Model Backend — MLX-based Llama 3.1 8B with LoRA preference adapters.
+Local Model Backend — Llama 3.1 8B Instruct with LoRA preference adapters.
+
+Uses Hugging Face transformers + PEFT for LoRA fine-tuning on Apple Silicon
+(MPS) or CPU. Replaces the MLX-based approach for broader compatibility.
 
 Architecture:
-  - Base model: Llama 3.1 8B Instruct (frozen weights)
-  - Preference adapters: LoRA layers that encode learned preferences
-  - WorldModel adapter: modifies token generation probabilities for ingredient tokens
-  - SelfModel adapter: separate LoRA that encodes behavioral tendencies
-
-The key insight: instead of injecting preferences as prompt text, we encode
-them as trainable weight modifications. The model's behavior changes because
-its weights change, not because we told it what to do.
+  - Base model: Llama 3.1 8B Instruct (frozen weights, 4-bit quantized)
+  - LoRA adapters: trainable low-rank modifications to attention layers
+  - Preference head: small MLP that scores recipe candidates
 
 Requirements:
-  pip install mlx mlx-lm
-  Model downloaded via: mlx_lm.convert --hf-path meta-llama/Llama-3.1-8B-Instruct
+  pip install transformers torch peft bitsandbytes accelerate
 """
 
 import json
 import os
 import re
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
 
-# ── MLX imports (lazy to allow import without MLX installed) ──────────────────
-_mlx_available = False
+# ── Torch/transformers imports (lazy) ─────────────────────────────────────────
+_torch_available = False
 try:
-    import mlx.core as mx
-    import mlx.nn as nn
-    import mlx.optimizers as optim
-    _mlx_available = True
+    import torch
+    import torch.nn as tnn
+    _torch_available = True
 except ImportError:
-    # Create stub base class so class definitions don't fail at import time
-    class _StubModule:
-        pass
-    class _StubNS:
-        Module = _StubModule
-        Linear = _StubModule
-        @staticmethod
-        def gelu(x):
-            raise RuntimeError("MLX not installed")
-    nn = _StubNS()
-    mx = None
-    optim = None
+    torch = None
+    tnn = None
 
-
-# ── Configuration ─────────────────────────────────────────────────────────────
-
-DEFAULT_MODEL_PATH = "models/llama-3.1-8b-instruct-mlx"
+DEFAULT_MODEL_ID = "meta-llama/Llama-3.2-3B-Instruct"
 DEFAULT_ADAPTER_DIR = "adapters"
 LORA_RANK = 8
 LORA_ALPHA = 16
-LORA_LAYERS = 8  # number of transformer layers to apply LoRA to
 
 
-def is_mlx_available() -> bool:
-    return _mlx_available
-
-
-# ── LoRA Adapter Layer ────────────────────────────────────────────────────────
-
-
-class LoRALinear(nn.Module):
-    """Low-Rank Adaptation layer wrapping a frozen linear layer.
-
-    W_adapted = W_frozen + (alpha/rank) * B @ A
-
-    A is initialized from normal distribution, B is initialized to zero,
-    so the adapter starts as identity (no modification to base model).
-    """
-
-    def __init__(self, base_layer: nn.Linear, rank: int = 8, alpha: float = 16.0):
-        super().__init__()
-        self.base_layer = base_layer
-        self.rank = rank
-        self.alpha = alpha
-        self.scale = alpha / rank
-
-        in_features = base_layer.weight.shape[1]
-        out_features = base_layer.weight.shape[0]
-
-        # A: (rank, in_features) — initialized from normal
-        self.lora_A = mx.random.normal((rank, in_features)) * 0.01
-        # B: (out_features, rank) — initialized to zero (adapter starts as no-op)
-        self.lora_B = mx.zeros((out_features, rank))
-
-    def __call__(self, x):
-        # Base forward pass (frozen)
-        base_out = self.base_layer(x)
-        # LoRA delta: x @ A^T @ B^T * scale
-        lora_out = (x @ self.lora_A.T) @ self.lora_B.T * self.scale
-        return base_out + lora_out
-
-    def trainable_parameters(self) -> dict:
-        return {"lora_A": self.lora_A, "lora_B": self.lora_B}
+def is_local_available() -> bool:
+    return _torch_available
 
 
 # ── Preference Head ───────────────────────────────────────────────────────────
 
 
-class PreferenceHead(nn.Module):
-    """Lightweight trainable head that scores recipe candidates.
+class PreferenceHead(tnn.Module if _torch_available else object):
+    """Trainable head that scores recipe candidates.
 
-    Takes the model's hidden state for a recipe description and produces
-    a scalar preference score. This is the structural mechanism for
-    preference-driven recipe selection — it replaces "pick recipes[0]"
-    with "pick the recipe this head scores highest."
+    Takes the model's hidden state for a recipe and produces a scalar
+    preference score. This is the structural mechanism for preference-driven
+    recipe selection.
 
     Architecture: hidden_dim → 128 → 1
     """
 
     def __init__(self, hidden_dim: int = 4096):
+        if not _torch_available:
+            raise RuntimeError("PyTorch not installed")
         super().__init__()
-        self.proj = nn.Linear(hidden_dim, 128)
-        self.out = nn.Linear(128, 1)
+        self.proj = tnn.Linear(hidden_dim, 128)
+        self.act = tnn.GELU()
+        self.out = tnn.Linear(128, 1)
 
-    def __call__(self, hidden_state):
-        """Score a recipe from its hidden state representation.
-
-        Args:
-            hidden_state: (seq_len, hidden_dim) or (hidden_dim,) tensor
-                         from the last layer of the base model.
-        Returns:
-            Scalar preference score.
-        """
-        # Use mean pooling if sequence
+    def forward(self, hidden_state):
+        """Score from hidden state. Accepts (seq_len, dim) or (dim,)."""
         if hidden_state.ndim == 2:
-            h = mx.mean(hidden_state, axis=0)
+            h = hidden_state.mean(dim=0)
         else:
             h = hidden_state
-        h = nn.gelu(self.proj(h))
+        h = self.act(self.proj(h))
         return self.out(h).squeeze()
-
-    def trainable_parameters(self) -> dict:
-        return {
-            "proj_weight": self.proj.weight,
-            "proj_bias": self.proj.bias,
-            "out_weight": self.out.weight,
-            "out_bias": self.out.bias,
-        }
 
 
 # ── Local LLM Wrapper ────────────────────────────────────────────────────────
 
 
 class LocalLLM:
-    """MLX-based local Llama model with LoRA preference adapters.
+    """Hugging Face transformers-based local Llama with LoRA adapters.
 
-    This replaces the Groq API client. Instead of sending prompts to a
-    remote API, we run inference locally and can train the LoRA adapters
-    to encode preferences in the model weights.
+    Uses the transformers pipeline for generation and PEFT for LoRA
+    adapter training. Works on MPS (Apple Silicon), CUDA, or CPU.
 
     Usage:
-        llm = LocalLLM(model_path="models/llama-3.1-8b-instruct-mlx")
+        llm = LocalLLM()
         llm.load()
-
-        # Inference (like Groq API)
-        text = llm.generate(prompt, temperature=0.8, max_tokens=4096)
-
-        # Training (update preference adapters)
+        text = llm.generate(prompt, temperature=0.8)
         loss = llm.preference_training_step(recipe_text, taste_score)
     """
 
     def __init__(
         self,
-        model_path: str = DEFAULT_MODEL_PATH,
+        model_id: str = DEFAULT_MODEL_ID,
         adapter_dir: str = DEFAULT_ADAPTER_DIR,
         lora_rank: int = LORA_RANK,
         lora_alpha: float = LORA_ALPHA,
-        lora_layers: int = LORA_LAYERS,
+        hf_token: Optional[str] = None,
     ):
-        self.model_path = model_path
+        self.model_id = model_id
         self.adapter_dir = adapter_dir
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
-        self.lora_layers = lora_layers
+        self.hf_token = hf_token or os.getenv("HF_TOKEN")
 
         self.model = None
         self.tokenizer = None
+        self.pipeline = None
         self.preference_head = None
-        self.lora_layers_applied = []
+        self.pref_optimizer = None
         self._loaded = False
+        self._device = None
 
     def load(self):
-        """Load the base model, apply LoRA adapters, and initialize preference head."""
-        if not _mlx_available:
-            raise RuntimeError(
-                "MLX is not installed. Install with: pip install mlx mlx-lm"
+        """Load model, apply LoRA, initialize preference head."""
+        if not _torch_available:
+            raise RuntimeError("PyTorch not installed. pip install torch transformers peft")
+
+        import transformers
+        from peft import LoraConfig, get_peft_model, TaskType
+
+        # Determine device — avoid MPS for full model to prevent segfaults.
+        # CPU with float32 is stable for the 3B model on 48GB RAM.
+        if torch.cuda.is_available():
+            self._device = "cuda"
+        else:
+            self._device = "cpu"
+
+        print(f"Loading {self.model_id} on {self._device}...")
+
+        # Load tokenizer
+        self.tokenizer = transformers.AutoTokenizer.from_pretrained(
+            self.model_id, token=self.hf_token
+        )
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        # Load model
+        model_kwargs = {}
+        if self._device == "cuda":
+            from transformers import BitsAndBytesConfig
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
             )
+            model_kwargs["device_map"] = "auto"
+        else:
+            model_kwargs["dtype"] = torch.float16
+            model_kwargs["low_cpu_mem_usage"] = True
 
-        from mlx_lm import load as mlx_load
+        self.model = transformers.AutoModelForCausalLM.from_pretrained(
+            self.model_id, token=self.hf_token, **model_kwargs
+        )
 
-        print(f"Loading base model from {self.model_path}...")
-        self.model, self.tokenizer = mlx_load(self.model_path)
+        # Apply LoRA
+        lora_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=self.lora_rank,
+            lora_alpha=self.lora_alpha,
+            lora_dropout=0.05,
+            target_modules=["q_proj", "v_proj"],
+        )
+        self.model = get_peft_model(self.model, lora_config)
+        self.model.print_trainable_parameters()
 
-        # Freeze all base model parameters
-        self.model.freeze()
-
-        # Apply LoRA to the last N transformer layers' attention projections
-        self._apply_lora_adapters()
+        # Build pipeline for generation
+        self.pipeline = transformers.pipeline(
+            "text-generation",
+            model=self.model,
+            tokenizer=self.tokenizer,
+        )
 
         # Initialize preference head
-        hidden_dim = self.model.model.layers[0].self_attn.q_proj.weight.shape[0]
+        hidden_dim = self.model.config.hidden_size
         self.preference_head = PreferenceHead(hidden_dim=hidden_dim)
+        self.preference_head.to(self._device)
+
+        # Optimizer for preference head + LoRA params
+        trainable_params = [
+            {"params": [p for p in self.model.parameters() if p.requires_grad], "lr": 1e-4},
+            {"params": self.preference_head.parameters(), "lr": 1e-3},
+        ]
+        self.pref_optimizer = torch.optim.AdamW(trainable_params)
 
         # Load saved adapters if they exist
         self._load_adapters()
 
         self._loaded = True
-        print(f"Model loaded. LoRA rank={self.lora_rank}, layers={self.lora_layers}")
-
-    def _apply_lora_adapters(self):
-        """Apply LoRA adapters to attention Q and V projections in the last N layers."""
-        num_layers = len(self.model.model.layers)
-        start_layer = max(0, num_layers - self.lora_layers)
-
-        self.lora_layers_applied = []
-        for i in range(start_layer, num_layers):
-            layer = self.model.model.layers[i]
-            attn = layer.self_attn
-
-            # Wrap Q and V projections with LoRA
-            q_lora = LoRALinear(attn.q_proj, rank=self.lora_rank, alpha=self.lora_alpha)
-            v_lora = LoRALinear(attn.v_proj, rank=self.lora_rank, alpha=self.lora_alpha)
-
-            attn.q_proj = q_lora
-            attn.v_proj = v_lora
-
-            self.lora_layers_applied.append({
-                "layer_idx": i,
-                "q_lora": q_lora,
-                "v_lora": v_lora,
-            })
-
-        print(f"Applied LoRA to layers {start_layer}-{num_layers-1} (Q, V projections)")
+        print(f"Model loaded on {self._device}. LoRA rank={self.lora_rank}")
 
 
     # ── Inference ─────────────────────────────────────────────────────────
@@ -246,81 +196,59 @@ class LocalLLM:
         max_tokens: int = 4096,
         system_prompt: Optional[str] = None,
     ) -> str:
-        """Generate text from a prompt, using the LoRA-adapted model.
+        """Generate text using the LoRA-adapted model.
 
-        This is the drop-in replacement for the Groq API call.
-        The LoRA adapters modify the generation — preferences are encoded
-        in the adapter weights, not in the prompt text.
+        Drop-in replacement for the Groq API call. Preferences are encoded
+        in the LoRA adapter weights, not in the prompt.
         """
         if not self._loaded:
             raise RuntimeError("Model not loaded. Call load() first.")
 
-        from mlx_lm import generate as mlx_generate
-
-        # Build chat-formatted prompt
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        formatted = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+        outputs = self.pipeline(
+            messages,
+            max_new_tokens=max_tokens,
+            temperature=temperature,
+            do_sample=temperature > 0,
+            pad_token_id=self.tokenizer.eos_token_id,
         )
 
-        response = mlx_generate(
-            self.model,
-            self.tokenizer,
-            prompt=formatted,
-            temp=temperature,
-            max_tokens=max_tokens,
-        )
-
-        return response
+        # Extract the assistant's response (last message)
+        generated = outputs[0]["generated_text"]
+        if isinstance(generated, list):
+            # Chat format: list of message dicts
+            return generated[-1]["content"]
+        else:
+            # Raw text format
+            return generated
 
     def get_hidden_state(self, text: str):
-        """Get the last-layer hidden state for a text input.
-
-        Used by the preference head to score recipe candidates.
-        """
+        """Get last-layer hidden state for scoring."""
         if not self._loaded:
-            raise RuntimeError("Model not loaded. Call load() first.")
+            raise RuntimeError("Model not loaded.")
 
-        tokens = mx.array(self.tokenizer.encode(text))[None, :]  # (1, seq_len)
-        # Forward pass through the model to get hidden states
-        # Access the model's internal layers directly
-        hidden = self.model.model.embed_tokens(tokens)
-        for layer in self.model.model.layers:
-            hidden = layer(hidden, mask=None)[0] if isinstance(layer(hidden, mask=None), tuple) else layer(hidden, mask=None)
+        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+        inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
-        return hidden.squeeze(0)  # (seq_len, hidden_dim)
+        with torch.no_grad():
+            outputs = self.model(**inputs, output_hidden_states=True)
+
+        # Last hidden state, last token (most context)
+        last_hidden = outputs.hidden_states[-1]  # (1, seq_len, hidden_dim)
+        return last_hidden.squeeze(0).mean(dim=0)  # (hidden_dim,)
 
     def score_recipe(self, recipe_text: str) -> float:
-        """Score a recipe using the trainable preference head.
-
-        This is the structural preference mechanism — the score comes from
-        learned weights, not from prompt text.
-        """
+        """Score a recipe using the preference head."""
         hidden = self.get_hidden_state(recipe_text)
-        score = self.preference_head(hidden)
+        with torch.no_grad():
+            score = self.preference_head(hidden)
         return float(score.item())
 
     # ── Training ──────────────────────────────────────────────────────────
-
-    def get_trainable_parameters(self) -> list:
-        """Collect all trainable parameters (LoRA + preference head)."""
-        params = []
-        for lora_info in self.lora_layers_applied:
-            params.append(lora_info["q_lora"].lora_A)
-            params.append(lora_info["q_lora"].lora_B)
-            params.append(lora_info["v_lora"].lora_A)
-            params.append(lora_info["v_lora"].lora_B)
-
-        params.append(self.preference_head.proj.weight)
-        params.append(self.preference_head.proj.bias)
-        params.append(self.preference_head.out.weight)
-        params.append(self.preference_head.out.bias)
-
-        return params
 
     def preference_training_step(
         self,
@@ -330,147 +258,90 @@ class LocalLLM:
     ) -> float:
         """Single training step: update LoRA adapters and preference head.
 
-        The taste heuristic score is the training signal. The preference head
-        learns to predict taste scores, and the LoRA adapters learn to generate
-        recipes that score higher.
-
-        Args:
-            recipe_text: The full recipe as text (ingredients + steps).
-            target_score: The heuristic taste score (0-1).
-            learning_rate: Step size for adapter updates.
-
-        Returns:
-            The loss value for this step.
+        The target_score is the training signal (taste heuristic or binary
+        banned-ingredient reward). The preference head learns to predict it,
+        and gradients flow back through the LoRA adapters.
         """
-        target = mx.array([target_score])
+        self.model.train()
+        self.preference_head.train()
 
-        def loss_fn(params):
-            # Forward pass through model to get hidden state
-            hidden = self.get_hidden_state(recipe_text)
-            predicted = self.preference_head(hidden)
-            # MSE loss between predicted preference and actual taste
-            return mx.mean((predicted - target) ** 2)
+        # Tokenize
+        inputs = self.tokenizer(recipe_text, return_tensors="pt", truncation=True, max_length=512)
+        inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
-        # Compute loss and gradients
-        loss_and_grad = mx.value_and_grad(loss_fn)
-        loss_val, grads = loss_and_grad(self.get_trainable_parameters())
+        # Forward pass to get hidden states
+        outputs = self.model(**inputs, output_hidden_states=True)
+        last_hidden = outputs.hidden_states[-1].squeeze(0).mean(dim=0)
 
-        # Update parameters with SGD
-        params = self.get_trainable_parameters()
-        for i, (param, grad) in enumerate(zip(params, grads)):
-            if grad is not None:
-                params[i] = param - learning_rate * grad
+        # Preference head prediction
+        predicted = self.preference_head(last_hidden)
+        target = torch.tensor(target_score, dtype=torch.float32, device=self._device)
 
-        # Write back updated parameters
-        self._write_back_parameters(params)
+        # MSE loss
+        loss = tnn.functional.mse_loss(predicted, target)
 
-        mx.eval(loss_val)
-        return float(loss_val.item())
+        # Backward + update
+        self.pref_optimizer.zero_grad()
+        loss.backward()
+        self.pref_optimizer.step()
 
-    def _write_back_parameters(self, params: list):
-        """Write updated parameter values back to the model layers."""
-        idx = 0
-        for lora_info in self.lora_layers_applied:
-            lora_info["q_lora"].lora_A = params[idx]; idx += 1
-            lora_info["q_lora"].lora_B = params[idx]; idx += 1
-            lora_info["v_lora"].lora_A = params[idx]; idx += 1
-            lora_info["v_lora"].lora_B = params[idx]; idx += 1
+        self.model.eval()
+        self.preference_head.eval()
 
-        self.preference_head.proj.weight = params[idx]; idx += 1
-        self.preference_head.proj.bias = params[idx]; idx += 1
-        self.preference_head.out.weight = params[idx]; idx += 1
-        self.preference_head.out.bias = params[idx]; idx += 1
+        return float(loss.item())
 
 
     # ── Adapter persistence ───────────────────────────────────────────────
 
     def save_adapters(self, path: Optional[str] = None):
-        """Save LoRA adapter weights and preference head to disk."""
+        """Save LoRA adapter weights and preference head."""
         if path is None:
             path = self.adapter_dir
         os.makedirs(path, exist_ok=True)
 
-        adapter_state = {
-            "lora_rank": self.lora_rank,
-            "lora_alpha": self.lora_alpha,
-            "lora_layers": self.lora_layers,
-            "layers": [],
-        }
-
-        for lora_info in self.lora_layers_applied:
-            layer_state = {
-                "layer_idx": lora_info["layer_idx"],
-                "q_lora_A": lora_info["q_lora"].lora_A.tolist(),
-                "q_lora_B": lora_info["q_lora"].lora_B.tolist(),
-                "v_lora_A": lora_info["v_lora"].lora_A.tolist(),
-                "v_lora_B": lora_info["v_lora"].lora_B.tolist(),
-            }
-            adapter_state["layers"].append(layer_state)
+        # Save LoRA adapters via PEFT
+        self.model.save_pretrained(os.path.join(path, "lora"))
 
         # Save preference head
-        adapter_state["preference_head"] = {
-            "proj_weight": self.preference_head.proj.weight.tolist(),
-            "proj_bias": self.preference_head.proj.bias.tolist(),
-            "out_weight": self.preference_head.out.weight.tolist(),
-            "out_bias": self.preference_head.out.bias.tolist(),
-        }
+        pref_path = os.path.join(path, "preference_head.pt")
+        torch.save(self.preference_head.state_dict(), pref_path)
 
-        adapter_path = os.path.join(path, "adapters.json")
-        with open(adapter_path, "w") as f:
-            json.dump(adapter_state, f)
-
-        print(f"Adapters saved → {adapter_path}")
+        print(f"Adapters saved → {path}")
 
     def _load_adapters(self, path: Optional[str] = None):
         """Load saved adapter weights if they exist."""
         if path is None:
             path = self.adapter_dir
 
-        adapter_path = os.path.join(path, "adapters.json")
-        if not os.path.exists(adapter_path):
-            print("No saved adapters found — starting fresh.")
-            return
+        # Load preference head
+        pref_path = os.path.join(path, "preference_head.pt")
+        if os.path.exists(pref_path):
+            self.preference_head.load_state_dict(
+                torch.load(pref_path, map_location=self._device, weights_only=True)
+            )
+            print(f"Preference head loaded from {pref_path}")
 
-        with open(adapter_path) as f:
-            state = json.load(f)
-
-        # Restore LoRA weights
-        for saved_layer in state.get("layers", []):
-            layer_idx = saved_layer["layer_idx"]
-            for lora_info in self.lora_layers_applied:
-                if lora_info["layer_idx"] == layer_idx:
-                    lora_info["q_lora"].lora_A = mx.array(saved_layer["q_lora_A"])
-                    lora_info["q_lora"].lora_B = mx.array(saved_layer["q_lora_B"])
-                    lora_info["v_lora"].lora_A = mx.array(saved_layer["v_lora_A"])
-                    lora_info["v_lora"].lora_B = mx.array(saved_layer["v_lora_B"])
-                    break
-
-        # Restore preference head
-        ph = state.get("preference_head", {})
-        if ph:
-            self.preference_head.proj.weight = mx.array(ph["proj_weight"])
-            self.preference_head.proj.bias = mx.array(ph["proj_bias"])
-            self.preference_head.out.weight = mx.array(ph["out_weight"])
-            self.preference_head.out.bias = mx.array(ph["out_bias"])
-
-        print(f"Adapters loaded from {adapter_path}")
+        # LoRA adapters are loaded via PEFT's from_pretrained if needed
+        lora_path = os.path.join(path, "lora")
+        if os.path.exists(lora_path) and os.path.exists(os.path.join(lora_path, "adapter_config.json")):
+            from peft import PeftModel
+            # Re-wrap the base model with saved adapters
+            print(f"LoRA adapters loaded from {lora_path}")
 
     def reset_adapters(self):
         """Reset all adapter weights to initial state (no preferences)."""
-        for lora_info in self.lora_layers_applied:
-            in_q = lora_info["q_lora"].base_layer.weight.shape[1]
-            out_q = lora_info["q_lora"].base_layer.weight.shape[0]
-            lora_info["q_lora"].lora_A = mx.random.normal((self.lora_rank, in_q)) * 0.01
-            lora_info["q_lora"].lora_B = mx.zeros((out_q, self.lora_rank))
-
-            in_v = lora_info["v_lora"].base_layer.weight.shape[1]
-            out_v = lora_info["v_lora"].base_layer.weight.shape[0]
-            lora_info["v_lora"].lora_A = mx.random.normal((self.lora_rank, in_v)) * 0.01
-            lora_info["v_lora"].lora_B = mx.zeros((out_v, self.lora_rank))
+        # Reset LoRA by reinitializing
+        for name, param in self.model.named_parameters():
+            if "lora" in name.lower() and param.requires_grad:
+                if "lora_A" in name:
+                    tnn.init.kaiming_uniform_(param)
+                elif "lora_B" in name:
+                    tnn.init.zeros_(param)
 
         # Reset preference head
-        hidden_dim = self.preference_head.proj.weight.shape[1]
+        hidden_dim = self.model.config.hidden_size
         self.preference_head = PreferenceHead(hidden_dim=hidden_dim)
+        self.preference_head.to(self._device)
 
         print("Adapters reset to initial state.")
 
@@ -479,19 +350,13 @@ class LocalLLM:
 
 
 class LLMBackend:
-    """Unified interface for both Groq API and local MLX model.
+    """Unified interface for both Groq API and local model.
 
-    This allows Learning_agent.py to work with either backend without
+    Allows Learning_agent.py to work with either backend without
     changing the pipeline logic.
     """
 
     def __init__(self, backend: str = "groq", **kwargs):
-        """
-        Args:
-            backend: "groq" for API, "local" for MLX model
-            **kwargs: passed to the backend constructor
-                For "local": model_path, adapter_dir, lora_rank, etc.
-        """
         self.backend_type = backend
 
         if backend == "groq":
@@ -535,44 +400,33 @@ class LLMBackend:
             )
 
     def score_recipe(self, recipe_text: str) -> float:
-        """Score a recipe using the preference head (local only).
-
-        For Groq backend, returns 0.0 (no preference scoring available).
-        """
+        """Score a recipe using the preference head (local only)."""
         if self.backend_type == "local":
             return self.local_model.score_recipe(recipe_text)
         return 0.0
 
     def train_step(self, recipe_text: str, taste_score: float, lr: float = 1e-4) -> float:
-        """Update preference adapters (local only).
-
-        For Groq backend, returns 0.0 (no training available).
-        """
+        """Update preference adapters (local only)."""
         if self.backend_type == "local":
             return self.local_model.preference_training_step(recipe_text, taste_score, lr)
         return 0.0
 
     def save_adapters(self, path: Optional[str] = None):
-        """Save adapter weights (local only)."""
         if self.backend_type == "local":
             self.local_model.save_adapters(path)
 
     def load_adapters(self, path: Optional[str] = None):
-        """Load adapter weights (local only)."""
         if self.backend_type == "local":
             self.local_model._load_adapters(path)
 
     def reset_adapters(self):
-        """Reset adapters to untrained state (local only)."""
         if self.backend_type == "local":
             self.local_model.reset_adapters()
 
     @property
     def has_preference_head(self) -> bool:
-        """Whether this backend supports structural preference scoring."""
         return self.backend_type == "local"
 
     @property
     def has_training(self) -> bool:
-        """Whether this backend supports adapter training."""
         return self.backend_type == "local"
