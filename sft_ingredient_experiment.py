@@ -62,7 +62,7 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 print(f"Base model loaded: {MODEL_ID}")
 
-from peft import LoraConfig, TaskType
+from peft import LoraConfig, TaskType, get_peft_model
 
 lora_config = LoraConfig(
     task_type=TaskType.CAUSAL_LM,
@@ -71,6 +71,9 @@ lora_config = LoraConfig(
     lora_dropout=0.05,
     target_modules=["q_proj", "v_proj"],
 )
+
+model = get_peft_model(model, lora_config)
+model.print_trainable_parameters()
 
 
 import json
@@ -168,8 +171,21 @@ dataset = Dataset.from_list(sft_examples)
 print(f"SFT dataset: {len(dataset)} examples")
 print(f"\nExample (truncated):\n{dataset[0]['text'][:500]}...")
 
-from trl import SFTTrainer
-from transformers import TrainingArguments
+from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling
+
+# Tokenize the dataset manually
+def tokenize_fn(example):
+    tokens = tokenizer(
+        example["text"],
+        truncation=True,
+        max_length=MAX_SEQ_LENGTH,
+        padding="max_length",
+    )
+    tokens["labels"] = tokens["input_ids"].copy()
+    return tokens
+
+tokenized_dataset = dataset.map(tokenize_fn, remove_columns=["text"])
+tokenized_dataset.set_format("torch")
 
 training_args = TrainingArguments(
     output_dir=WEIGHT_SAVE_PATH,
@@ -186,15 +202,13 @@ training_args = TrainingArguments(
     report_to="none",
 )
 
-trainer = SFTTrainer(
+data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+
+trainer = Trainer(
     model=model,
-    train_dataset=dataset,
-    peft_config=lora_config,
+    train_dataset=tokenized_dataset,
     args=training_args,
-    processing_class=tokenizer,
-    max_seq_length=MAX_SEQ_LENGTH,
-    dataset_text_field="text",
-    packing=False,
+    data_collator=data_collator,
 )
 
 # Resume from checkpoint if one exists (e.g., after Colab timeout)
