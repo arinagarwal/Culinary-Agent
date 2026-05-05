@@ -168,9 +168,10 @@ dataset = Dataset.from_list(sft_examples)
 print(f"SFT dataset: {len(dataset)} examples")
 print(f"\nExample (truncated):\n{dataset[0]['text'][:500]}...")
 
-from trl import SFTTrainer, SFTConfig
+from trl import SFTTrainer
+from transformers import TrainingArguments
 
-sft_config = SFTConfig(
+training_args = TrainingArguments(
     output_dir=WEIGHT_SAVE_PATH,
     num_train_epochs=NUM_EPOCHS,
     per_device_train_batch_size=1,
@@ -182,9 +183,6 @@ sft_config = SFTConfig(
     save_strategy="steps",
     save_steps=25,
     save_total_limit=2,
-    max_seq_length=MAX_SEQ_LENGTH,
-    dataset_text_field="text",
-    packing=False,
     report_to="none",
 )
 
@@ -192,8 +190,11 @@ trainer = SFTTrainer(
     model=model,
     train_dataset=dataset,
     peft_config=lora_config,
-    args=sft_config,
-    processing_class=tokenizer,
+    args=training_args,
+    tokenizer=tokenizer,
+    max_seq_length=MAX_SEQ_LENGTH,
+    dataset_text_field="text",
+    packing=False,
 )
 
 # Resume from checkpoint if one exists (e.g., after Colab timeout)
