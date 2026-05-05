@@ -12,9 +12,9 @@ SUBSTITUTIONS = {
     "sugar": "maple syrup",
 }
 
-NUM_TRAINING_EXAMPLES = 1  # Number of SFT training examples to generate
-NUM_EVAL_PROMPTS = 1
-NUM_EPOCHS = 1
+NUM_TRAINING_EXAMPLES = 100  # Number of SFT training examples to generate
+NUM_EVAL_PROMPTS = 100
+NUM_EPOCHS = 3
 TEMPERATURE = 0.8
 MAX_TOKENS = 512
 LEARNING_RATE = 2e-4
@@ -30,7 +30,7 @@ EVAL_PROMPT_TEMPLATE = "Write a recipe for {dish}. Include a title, an Ingredien
 from dishes import DISHES
 
 training_dishes = DISHES[0:NUM_TRAINING_EXAMPLES]
-eval_dishes = DISHES[900:901]
+eval_dishes = DISHES[900:1000]
 print(f"Training dishes: {len(training_dishes)} (indices 0-{NUM_TRAINING_EXAMPLES-1})")
 print(f"Eval dishes: {len(eval_dishes)} (indices 900-1000)")
 
