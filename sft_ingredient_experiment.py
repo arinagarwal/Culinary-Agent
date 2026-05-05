@@ -12,7 +12,7 @@ SUBSTITUTIONS = {
     "sugar": "maple syrup",
 }
 
-NUM_TRAINING_EXAMPLES = 100  # Number of SFT training examples to generate
+NUM_TRAINING_EXAMPLES = 900  # Number of SFT training examples to generate
 NUM_EVAL_PROMPTS = 100
 NUM_EPOCHS = 3
 TEMPERATURE = 0.8
@@ -22,6 +22,7 @@ MAX_SEQ_LENGTH = 512
 
 WEIGHT_SAVE_PATH = "./sft_lora_weights"
 DATA_CACHE_PATH = "./sft_training_data.json"
+FORCE_RETRAIN = False
 FORCE_RETRAIN = False
 
 # The prompt the model sees at inference (no mention of banned ingredients)
