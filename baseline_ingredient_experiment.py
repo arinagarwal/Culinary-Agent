@@ -22,7 +22,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 # ── Configuration ──────────────────────────────────────────
 MODEL_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 BANNED_INGREDIENTS = ["garlic", "butter", "heavy cream", "soy sauce", "sugar"]
-NUM_EVAL_PROMPTS = 1
+NUM_EVAL_PROMPTS = 100
 TEMPERATURE = 0.8
 MAX_TOKENS = 512
 PROMPT_TEMPLATE = (
@@ -74,11 +74,8 @@ DISHES: list[str] = [
     "Bucatini all'Amatriciana", "Supplì al Telefono", "Fritto Misto di Mare",
     "Involtini di Melanzane", "Zuppa Toscana",
     "Orecchiette con Cime di Rapa", "Pasta alla Norma", "Acqua Pazza",
-    "Bagna Cauda", "Pandoro", "Panettone", "Zabaglione",
-    "Stracciatella Soup",
     # ── Japanese (51–100)
-    "Tonkotsu Ramen", "Chicken Katsu Curry", "Sushi Nigiri Platter",
-    "Tempura Udon", "Miso Soup", "Teriyaki Salmon", "Gyoza", "Takoyaki",
+     "Teriyaki Salmon", "Gyoza", "Takoyaki",
     "Okonomiyaki", "Yakitori Skewers", "Chirashi Bowl", "Edamame",
     "Tonkatsu with Cabbage", "Unagi Don", "Matcha Ice Cream", "Mochi",
     "Dorayaki", "Tamagoyaki", "Chawanmushi", "Shabu-Shabu", "Sukiyaki",
@@ -90,8 +87,7 @@ DISHES: list[str] = [
     "Tori Paitan Ramen", "Shoyu Ramen", "Zaru Soba", "Kitsune Udon",
     "Wagyu Beef Tataki", "Japanese Cheesecake",
     # ── Mexican (101–150)
-    "Tacos al Pastor", "Chicken Enchiladas", "Guacamole",
-    "Mole Poblano with Turkey", "Chiles Rellenos", "Pozole Rojo",
+    "Chiles Rellenos", "Pozole Rojo",
     "Tamales de Pollo", "Carnitas", "Birria Tacos", "Elote",
     "Churros with Chocolate Sauce", "Quesadillas de Huitlacoche", "Sopes",
     "Tostadas de Tinga", "Chilaquiles Verdes", "Cochinita Pibil",
@@ -105,7 +101,6 @@ DISHES: list[str] = [
     "Menudo", "Champurrado", "Atole de Vainilla", "Taco de Lengua",
     "Suadero Tacos", "Mole Negro", "Pipián Verde", "Calabacitas con Elote",
     # ── Indian (151–200)
-    "Chicken Tikka Masala", "Palak Paneer", "Butter Chicken", "Biryani",
     "Samosa", "Chana Masala", "Dal Tadka", "Aloo Gobi", "Rogan Josh",
     "Tandoori Chicken", "Naan Bread", "Dosa with Coconut Chutney",
     "Idli with Sambar", "Vindaloo", "Korma", "Malai Kofta", "Paneer Tikka",
@@ -118,8 +113,7 @@ DISHES: list[str] = [
     "Lamb Keema", "Aloo Paratha", "Gobi Manchurian",
     "Paneer Butter Masala", "Dal Makhani", "Murgh Makhani", "Ras Malai",
     # ── Thai (201–250)
-    "Pad Thai", "Green Curry with Chicken", "Tom Yum Goong",
-    "Massaman Curry", "Som Tum", "Pad See Ew", "Khao Pad", "Larb Gai",
+    "Pad See Ew", "Khao Pad", "Larb Gai",
     "Panang Curry", "Mango Sticky Rice", "Tom Kha Gai", "Pad Kra Pao",
     "Satay with Peanut Sauce", "Thai Basil Fried Rice", "Gaeng Daeng",
     "Khao Soi", "Yam Woon Sen", "Pla Rad Prik", "Gai Yang", "Kai Jeow",
@@ -132,8 +126,7 @@ DISHES: list[str] = [
     "Bua Loi", "Tub Tim Grob", "Sangkhaya Fak Thong", "Kluay Buat Chi",
     "Thai Iced Tea", "Coconut Soup with Galangal",
     # ── Chinese (251–300)
-    "Kung Pao Chicken", "Mapo Tofu", "Peking Duck", "Dim Sum Platter",
-    "Char Siu Pork", "Wonton Soup", "Hot and Sour Soup", "Chow Mein",
+    "Wonton Soup", "Hot and Sour Soup", "Chow Mein",
     "Fried Rice with Egg", "Spring Rolls", "Dan Dan Noodles",
     "Xiao Long Bao", "Sichuan Boiled Fish", "General Tso's Chicken",
     "Congee with Century Egg", "Scallion Pancakes", "Zhajiangmian",
@@ -149,8 +142,7 @@ DISHES: list[str] = [
     "Moo Shu Pork", "Egg Foo Young", "Tanghulu", "Mooncake",
     "Red Bean Soup", "Bubble Tea",
     # ── French (301–350)
-    "Coq au Vin", "Beef Bourguignon", "Ratatouille", "Croque Monsieur",
-    "French Onion Soup", "Bouillabaisse", "Quiche Lorraine",
+    "Bouillabaisse", "Quiche Lorraine",
     "Crème Brûlée", "Soufflé au Fromage", "Tarte Tatin", "Cassoulet",
     "Duck Confit", "Steak Frites", "Salade Niçoise", "Croissant",
     "Pain au Chocolat", "Madeleines", "Profiteroles", "Crêpes Suzette",
@@ -164,8 +156,7 @@ DISHES: list[str] = [
     "Soupe au Pistou", "Vichyssoise", "Quenelles de Brochet",
     "Île Flottante", "Mousse au Chocolat",
     # ── Korean (351–400)
-    "Bibimbap", "Kimchi Jjigae", "Bulgogi", "Japchae", "Tteokbokki",
-    "Samgyeopsal", "Sundubu Jjigae", "Galbi", "Kimchi Fried Rice", "Pajeon",
+    "Sundubu Jjigae", "Galbi", "Kimchi Fried Rice", "Pajeon",
     "Kimbap", "Dakgalbi", "Jjajangmyeon", "Naengmyeon", "Bossam",
     "Gamjatang", "Doenjang Jjigae", "Haemul Pajeon", "Hobakjuk",
     "Bindaetteok", "Mandu", "Budae Jjigae", "Samgyetang", "Yukgaejang",
@@ -176,8 +167,7 @@ DISHES: list[str] = [
     "Gyeran Jjim", "Dubu Jorim", "Oi Sobagi", "Musaengchae", "Japchae Bap",
     "Kimchi Mandu", "Korean Fried Chicken",
     # ── Ethiopian (401–435)
-    "Doro Wat", "Injera with Misir Wat", "Kitfo", "Tibs", "Shiro Wat",
-    "Gomen", "Yebeg Tibs", "Ayib", "Firfir", "Genfo", "Zilzil Tibs",
+    "Yebeg Tibs", "Ayib", "Firfir", "Genfo", "Zilzil Tibs",
     "Kategna", "Azifa", "Yataklete Kilkil", "Doro Alicha", "Siga Wat",
     "Beyainatu", "Enkulal Firfir", "Chechebsa", "Fatira", "Sambusa",
     "Yemisir Kik", "Gored Gored", "Tere Siga", "Awaze Tibs", "Dulet",
@@ -185,8 +175,7 @@ DISHES: list[str] = [
     "Ambasha Bread", "Himbasha", "Ethiopian Coffee Ceremony Snacks",
     "Dabo Kolo",
     # ── Moroccan (436–470)
-    "Chicken Tagine with Preserved Lemons", "Lamb Tagine with Prunes",
-    "Couscous Royale", "Harira", "Pastilla", "Zaalouk", "Briouats",
+     "Harira", "Pastilla", "Zaalouk", "Briouats",
     "Rfissa", "Mechoui", "Taktouka", "Moroccan Mint Tea", "Msemen",
     "Baghrir", "Chebakia", "Sellou", "Moroccan Carrot Salad",
     "Kefta Tagine with Eggs", "Tangia Marrakchia", "Bessara", "Harcha",
@@ -196,8 +185,7 @@ DISHES: list[str] = [
     "Lamb Mrouzia with Almonds and Raisins", "Berber Omelette",
     "Moroccan Stuffed Sardines", "Chicken Bastilla", "Sfenj",
     # ── Peruvian (471–505)
-    "Ceviche de Pescado", "Lomo Saltado", "Aji de Gallina", "Anticuchos",
-    "Causa Limeña", "Papa a la Huancaína", "Rocoto Relleno",
+    "Papa a la Huancaína", "Rocoto Relleno",
     "Seco de Cordero", "Arroz con Mariscos", "Tacu Tacu",
     "Pollo a la Brasa", "Chupe de Camarones", "Tiradito", "Jalea",
     "Picarones", "Suspiro Limeño", "Alfajores Peruanos", "Lucuma Ice Cream",
@@ -207,8 +195,7 @@ DISHES: list[str] = [
     "Papa Rellena", "Mazamorra Morada", "Turrón de Doña Pepa",
     "Ceviche Mixto", "Solterito", "Choclo con Queso", "Pisco Sour",
     # ── Turkish (506–545)
-    "Iskender Kebab", "Lahmacun", "Pide", "Manti", "Imam Bayildi",
-    "Karniyarik", "Mercimek Çorbası", "Çiğ Köfte", "Adana Kebab",
+    "Mercimek Çorbası", "Çiğ Köfte", "Adana Kebab",
     "Döner Kebab", "Baklava", "Künefe", "Simit", "Börek", "Gözleme",
     "Menemen", "Hünkar Beğendi", "Kuzu Tandır", "Ali Nazik Kebab",
     "Çılbır", "Kumpir", "Midye Dolma", "Kokoreç", "Tavuk Göğsü", "Aşure",
@@ -217,8 +204,7 @@ DISHES: list[str] = [
     "Beyti Kebab", "Tantuni", "Çiğ Börek", "Kaymak with Honey",
     "Turkish Delight", "Salep",
     # ── Vietnamese (546–585)
-    "Pho Bo", "Banh Mi", "Bun Cha", "Goi Cuon", "Com Tam", "Bun Bo Hue",
-    "Cao Lau", "Mi Quang", "Banh Xeo", "Cha Ca La Vong", "Bo Luc Lac",
+    "Mi Quang", "Banh Xeo", "Cha Ca La Vong", "Bo Luc Lac",
     "Ga Nuong", "Canh Chua", "Bun Rieu", "Hu Tieu", "Xoi Xeo",
     "Banh Cuon", "Nem Ran", "Thit Kho Tau", "Ca Kho To", "Goi Ga",
     "Bun Thit Nuong", "Banh Bao", "Che Ba Mau", "Banh Flan",
@@ -227,8 +213,7 @@ DISHES: list[str] = [
     "Banh Canh", "Sup Cua", "Rau Muong Xao Toi", "Ga Kho Gung",
     "Banh Tet", "Banh Chung",
     # ── Greek (586–625)
-    "Moussaka", "Souvlaki", "Spanakopita", "Tzatziki", "Pastitsio",
-    "Dolmades", "Horiatiki Salad", "Gyros", "Fasolada", "Avgolemono Soup",
+    "Horiatiki Salad", "Gyros", "Fasolada", "Avgolemono Soup",
     "Kleftiko", "Stifado", "Gemista", "Saganaki", "Taramasalata",
     "Melitzanosalata", "Tiropita", "Loukoumades", "Galaktoboureko",
     "Baklava with Walnuts", "Revani", "Kourabiedes", "Melomakarona",
@@ -260,8 +245,7 @@ DISHES: list[str] = [
     "Lahm bi Ajin", "Hindbeh bil Zeit", "Kousa Mahshi",
     "Lebanese Lentil Soup",
     # ── Brazilian (701–735)
-    "Feijoada", "Pão de Queijo", "Coxinha", "Moqueca de Peixe", "Picanha",
-    "Brigadeiro", "Açaí Bowl", "Farofa", "Acarajé", "Vatapá",
+    "Açaí Bowl", "Farofa", "Acarajé", "Vatapá",
     "Bobó de Camarão", "Empadão", "Pastel", "Baião de Dois",
     "Tutu de Feijão", "Virado à Paulista", "Frango com Quiabo", "Galinhada",
     "Arroz Carreteiro", "Barreado", "Tacacá", "Pato no Tucupi", "Quindim",
@@ -344,11 +328,28 @@ DISHES: list[str] = [
     "Kremówka", "Mizeria", "Sałatka Jarzynowa", "Kluski Śląskie",
     "Kopytka", "Naleśniki with Cheese", "Zrazy Zawijane", "Karp Smażony",
     "Oscypek Grillowany", "Tatar", "Chłodnik Litewski",
+    # combined
+    "Bagna Cauda", "Pandoro", "Panettone", "Zabaglione",
+    "Stracciatella Soup", "Tonkotsu Ramen", "Chicken Katsu Curry", "Sushi Nigiri Platter",
+    "Tempura Udon", "Miso Soup", "Tacos al Pastor", "Chicken Enchiladas", "Guacamole",
+    "Mole Poblano with Turkey", "Chicken Tikka Masala", "Palak Paneer", "Butter Chicken", "Biryani", "Pad Thai", "Green Curry with Chicken", "Tom Yum Goong",
+    "Massaman Curry", "Som Tum”, "Kung Pao Chicken", "Mapo Tofu", "Peking Duck", "Dim Sum Platter",
+    "Char Siu Pork", "Coq au Vin", "Beef Bourguignon", "Ratatouille", "Croque Monsieur",
+    "French Onion Soup", "Bibimbap", "Kimchi Jjigae", "Bulgogi", "Japchae", "Tteokbokki",
+    "Samgyeopsal", "Doro Wat", "Injera with Misir Wat", "Kitfo", "Tibs", "Shiro Wat",
+    "Gomen", "Chicken Tagine with Preserved Lemons", "Lamb Tagine with Prunes",
+    "Couscous Royale", "Ceviche de Pescado", "Lomo Saltado", "Aji de Gallina", "Anticuchos",
+    "Causa Limeña", "Iskender Kebab", "Lahmacun", "Pide", "Manti", "Imam Bayildi",
+    "Karniyarik", "Pho Bo", "Banh Mi", "Bun Cha", "Goi Cuon", "Com Tam", "Bun Bo Hue",
+    "Cao Lau", "Moussaka", "Souvlaki", "Spanakopita", "Tzatziki", "Pastitsio",
+    "Dolmades”, "Feijoada", "Pão de Queijo", "Coxinha", "Moqueca de Peixe", "Picanha",
+    "Brigadeiro",
+
 ]
 print(f"DISHES loaded: {len(DISHES)} entries")
 
 # ── Select eval dishes ─────────────────────────────────────
-eval_dishes = DISHES[900:901]
+eval_dishes = DISHES[900:1000]
 print(f"Eval dishes: {len(eval_dishes)} dishes selected (indices 900-999)")
 for i, d in enumerate(eval_dishes):
     print(f"  {900+i}: {d}")
