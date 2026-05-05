@@ -23,7 +23,6 @@ MAX_SEQ_LENGTH = 512
 WEIGHT_SAVE_PATH = "./sft_lora_weights"
 DATA_CACHE_PATH = "./sft_training_data.json"
 FORCE_RETRAIN = False
-FORCE_RETRAIN = False
 
 # The prompt the model sees at inference (no mention of banned ingredients)
 EVAL_PROMPT_TEMPLATE = "Write a recipe for {dish}. Include a title, an Ingredients: section listing all ingredients, and step-by-step cooking instructions."
@@ -225,9 +224,10 @@ else:
 
 print("Training complete.")
 
-# Save final adapter weights
+# Save final adapter weights (safetensors format)
 trainer.save_model(os.path.join(WEIGHT_SAVE_PATH, "final"))
-print(f"Final LoRA weights saved to {WEIGHT_SAVE_PATH}/final")
+model.save_pretrained(os.path.join(WEIGHT_SAVE_PATH, "final"), safe_serialization=True)
+print(f"Final LoRA weights saved to {WEIGHT_SAVE_PATH}/final (safetensors)")
 
 # Merge LoRA adapters for inference
 model = trainer.model
