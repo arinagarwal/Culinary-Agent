@@ -20,8 +20,8 @@ MAX_TOKENS = 512
 LEARNING_RATE = 2e-4
 MAX_SEQ_LENGTH = 512
 
-WEIGHT_SAVE_PATH = "/content/drive/MyDrive/sft_lora_weights"
-DATA_CACHE_PATH = "/content/drive/MyDrive/sft_training_data.json"
+WEIGHT_SAVE_PATH = "./sft_lora_weights"
+DATA_CACHE_PATH = "./sft_training_data.json"
 FORCE_RETRAIN = False
 
 # The prompt the model sees at inference (no mention of banned ingredients)
@@ -111,7 +111,7 @@ def replace_banned_ingredients(recipe_text: str) -> str:
 if os.path.exists(DATA_CACHE_PATH) and not FORCE_RETRAIN:
     with open(DATA_CACHE_PATH) as f:
         training_data = json.load(f)
-    print(f"Loaded {len(training_data)} cached training examples from Drive.")
+    print(f"Loaded {len(training_data)} cached training examples from disk.")
 else:
     print(f"Generating {NUM_TRAINING_EXAMPLES} training recipes...")
     training_data = []
