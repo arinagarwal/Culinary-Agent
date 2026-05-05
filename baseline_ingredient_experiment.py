@@ -281,8 +281,7 @@ DISHES: list[str] = [
     "Green Bean Casserole", "Hush Puppies", "Funnel Cake", "Corn Dogs",
     "Clam Strips", "Chicken and Waffles", "Beignets", "Red Beans and Rice",
     # ── German (821–860)
-    "Schnitzel", "Bratwurst with Sauerkraut", "Sauerbraten", "Spätzle",
-    "Kartoffelpuffer", "Currywurst", "Rouladen", "Schweinshaxe",
+    "Currywurst", "Rouladen", "Schweinshaxe",
     "Königsberger Klopse", "Maultaschen", "Flammkuchen", "Labskaus",
     "Eintopf", "Reibekuchen", "Himmel und Erde", "Grünkohl mit Pinkel",
     "Rinderroulade", "Zwiebelkuchen", "Käsespätzle", "Dampfnudeln",
@@ -293,8 +292,7 @@ DISHES: list[str] = [
     "Handkäse mit Musik", "Matjes Herring", "Frikadellen", "Senfeier",
     "Germknödel",
     # ── Indonesian (861–890)
-    "Nasi Goreng", "Rendang", "Satay Ayam", "Gado-Gado", "Soto Ayam",
-    "Bakso", "Mie Goreng", "Nasi Uduk", "Rawon", "Gudeg", "Ayam Betutu",
+    "Mie Goreng", "Nasi Uduk", "Rawon", "Gudeg", "Ayam Betutu",
     "Bebek Goreng", "Pecel Lele", "Tahu Goreng", "Tempe Mendoan",
     "Sate Padang", "Nasi Padang", "Opor Ayam", "Sayur Asem", "Sayur Lodeh",
     "Ketoprak", "Lontong Sayur", "Pempek", "Martabak Manis", "Klepon",
@@ -307,22 +305,20 @@ DISHES: list[str] = [
     "Puto", "Ensaymada", "Turon", "Champorado", "Arroz Caldo", "Lugaw",
     "Longganisa", "Tapa", "Bistek Tagalog", "Crispy Pata",
     # ── Caribbean (921–950)
-    "Jerk Chicken", "Ackee and Saltfish", "Rice and Peas", "Oxtail Stew",
-    "Curry Goat", "Roti with Curry Chicken", "Doubles", "Callaloo", "Pelau",
+    "Doubles", "Callaloo", "Pelau",
     "Bake and Shark", "Conch Fritters", "Plantain Chips", "Mofongo",
     "Tostones", "Arroz con Gandules", "Pernil", "Sancocho", "Mangu",
     "Pikliz", "Griot", "Diri ak Djon Djon", "Jamaican Patty",
     "Festival Dumplings", "Bammy", "Escovitch Fish", "Brown Stew Chicken",
     "Rum Punch", "Sorrel Drink", "Coconut Drops", "Sweet Potato Pudding",
     # ── Scandinavian (951–975)
-    "Swedish Meatballs", "Gravlax", "Smørrebrød", "Janssons Frestelse",
     "Raggmunk", "Ärtsoppa", "Köttbullar with Lingonberry", "Pytt i Panna",
     "Toast Skagen", "Kroppkakor", "Smörgåstårta", "Kanelbullar", "Semla",
     "Prinsesstårta", "Kladdkaka", "Frikadeller", "Stegt Flæsk",
     "Æbleskiver", "Rødgrød med Fløde", "Risalamande", "Lutefisk", "Rakfisk",
     "Fårikål", "Kjøttkaker", "Krumkake",
     # ── Polish (976–1000)
-    "Pierogi Ruskie", "Bigos", "Żurek", "Barszcz Czerwony", "Gołąbki",
+    "Gołąbki",
     "Kotlet Schabowy", "Placki Ziemniaczane", "Rosół", "Flaki",
     "Kielbasa with Mustard", "Sernik", "Pączki", "Makowiec", "Szarlotka",
     "Kremówka", "Mizeria", "Sałatka Jarzynowa", "Kluski Śląskie",
@@ -333,7 +329,7 @@ DISHES: list[str] = [
     "Stracciatella Soup", "Tonkotsu Ramen", "Chicken Katsu Curry", "Sushi Nigiri Platter",
     "Tempura Udon", "Miso Soup", "Tacos al Pastor", "Chicken Enchiladas", "Guacamole",
     "Mole Poblano with Turkey", "Chicken Tikka Masala", "Palak Paneer", "Butter Chicken", "Biryani", "Pad Thai", "Green Curry with Chicken", "Tom Yum Goong",
-    "Massaman Curry", "Som Tum”, "Kung Pao Chicken", "Mapo Tofu", "Peking Duck", "Dim Sum Platter",
+    "Massaman Curry", "Som Tum", "Kung Pao Chicken", "Mapo Tofu", "Peking Duck", "Dim Sum Platter",
     "Char Siu Pork", "Coq au Vin", "Beef Bourguignon", "Ratatouille", "Croque Monsieur",
     "French Onion Soup", "Bibimbap", "Kimchi Jjigae", "Bulgogi", "Japchae", "Tteokbokki",
     "Samgyeopsal", "Doro Wat", "Injera with Misir Wat", "Kitfo", "Tibs", "Shiro Wat",
@@ -342,8 +338,11 @@ DISHES: list[str] = [
     "Causa Limeña", "Iskender Kebab", "Lahmacun", "Pide", "Manti", "Imam Bayildi",
     "Karniyarik", "Pho Bo", "Banh Mi", "Bun Cha", "Goi Cuon", "Com Tam", "Bun Bo Hue",
     "Cao Lau", "Moussaka", "Souvlaki", "Spanakopita", "Tzatziki", "Pastitsio",
-    "Dolmades”, "Feijoada", "Pão de Queijo", "Coxinha", "Moqueca de Peixe", "Picanha",
-    "Brigadeiro",
+    "Dolmades", "Feijoada", "Pão de Queijo", "Coxinha", "Moqueca de Peixe", "Picanha",
+    "Brigadeiro", "Swedish Meatballs", "Gravlax", "Smørrebrød", "Janssons Frestelse", "Pierogi Ruskie", "Bigos", "Żurek", "Barszcz Czerwony”, "Jerk Chicken", "Ackee and Saltfish", "Rice and Peas", "Oxtail Stew",
+    "Curry Goat", "Roti with Curry Chicken", "Nasi Goreng", "Rendang", "Satay Ayam", "Gado-Gado", "Soto Ayam",
+    "Bakso", "Schnitzel", "Bratwurst with Sauerkraut", "Sauerbraten", "Spätzle",
+    "Kartoffelpuffer",
 
 ]
 print(f"DISHES loaded: {len(DISHES)} entries")
