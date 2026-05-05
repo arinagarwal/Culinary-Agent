@@ -348,7 +348,7 @@ DISHES: list[str] = [
 print(f"DISHES loaded: {len(DISHES)} entries")
 
 # ── Select eval dishes ─────────────────────────────────────
-eval_dishes = DISHES[900:1000]
+eval_dishes = DISHES[900:901]
 print(f"Eval dishes: {len(eval_dishes)} dishes selected (indices 900-999)")
 for i, d in enumerate(eval_dishes):
     print(f"  {900+i}: {d}")
