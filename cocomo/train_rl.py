@@ -123,7 +123,7 @@ def train():
 
     reward_fn = RewardFunction(model=judge_model, tokenizer=tokenizer)
 
-    dataset = make_dataset(TRAIN_DISHES)
+    dataset = make_dataset(TRAIN_DISHES[:1])
 
     grpo_cfg = GRPOConfig(
         output_dir=GRPO_TRAINING_CONFIG["output_dir"],
@@ -140,7 +140,6 @@ def train():
         temperature=GENERATION_CONFIG["temperature"],
         top_p=GENERATION_CONFIG["top_p"],
         top_k=GENERATION_CONFIG["top_k"],
-        do_sample=True,
     )
 
     trainer = GRPOTrainer(
