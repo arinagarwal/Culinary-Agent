@@ -125,12 +125,12 @@ def train():
 
     reward_fn = RewardFunction(model=judge_model, tokenizer=tokenizer)
 
-    dataset = make_dataset(TRAIN_DISHES[:1])
+    dataset = make_dataset(TRAIN_DISHES)
 
     grpo_cfg = GRPOConfig(
         output_dir=GRPO_TRAINING_CONFIG["output_dir"],
         num_train_epochs=GRPO_TRAINING_CONFIG["num_train_epochs"],
-        per_device_train_batch_size=GRPO_TRAINING_CONFIG["per_device_train_batch_size"],
+        per_device_train_batch_size=4,
         gradient_accumulation_steps=GRPO_TRAINING_CONFIG["gradient_accumulation_steps"],
         learning_rate=GRPO_TRAINING_CONFIG["learning_rate"],
         bf16=False,
