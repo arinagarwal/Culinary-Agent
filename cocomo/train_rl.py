@@ -140,6 +140,7 @@ def train():
         temperature=GENERATION_CONFIG["temperature"],
         top_p=GENERATION_CONFIG["top_p"],
         top_k=GENERATION_CONFIG["top_k"],
+        num_generations=4,
     )
 
     trainer = GRPOTrainer(
