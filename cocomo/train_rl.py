@@ -86,7 +86,7 @@ def train():
     print(f"Loading model: {MODEL_NAME}")
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_compute_dtype=get_bnb_compute_dtype(),
+        bnb_4bit_compute_dtype=torch.float16,
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     if tokenizer.pad_token is None:
@@ -97,6 +97,7 @@ def train():
         MODEL_NAME,
         quantization_config=bnb_config,
         device_map="auto",
+        torch_dtype=torch.float16,
     )
     model = prepare_model_for_kbit_training(model)
 
@@ -116,6 +117,7 @@ def train():
         MODEL_NAME,
         quantization_config=bnb_config,
         device_map="auto",
+        torch_dtype=torch.float16,
     )
     for param in judge_model.parameters():
         param.requires_grad = False
@@ -131,7 +133,8 @@ def train():
         per_device_train_batch_size=GRPO_TRAINING_CONFIG["per_device_train_batch_size"],
         gradient_accumulation_steps=GRPO_TRAINING_CONFIG["gradient_accumulation_steps"],
         learning_rate=GRPO_TRAINING_CONFIG["learning_rate"],
-        bf16=GRPO_TRAINING_CONFIG["bf16"],
+        bf16=False,
+        fp16=True,
         max_completion_length=GRPO_TRAINING_CONFIG["max_seq_length"],
         save_steps=GRPO_TRAINING_CONFIG["save_steps"],
         logging_steps=10,
