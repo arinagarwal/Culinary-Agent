@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'final'))
@@ -24,7 +26,7 @@ class Receptor:
     processes sensor input into workspace representations.
     """
 
-    def process(self, dish: str, past_substitutions: list | None = None) -> dict:
+    def process(self, dish: str, past_substitutions=None) -> dict:
         cuisine = infer_cuisine(dish)
         risk_score = CUISINE_RISK_MAP.get(cuisine, CUISINE_RISK_MAP["Unknown"])
 

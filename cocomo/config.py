@@ -3,6 +3,18 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'final'))
 from dishes import DISHES
 
+import torch
+
+
+def get_bnb_compute_dtype():
+    """
+    Prefer bfloat16 (works on L4/g6e and newer GPUs).
+    Falls back to float16 if bfloat16 isn't supported on the current device.
+    """
+    if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        return torch.bfloat16
+    return torch.float16
+
 MODEL_NAME = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
 BANNED_INGREDIENTS = ["garlic", "butter", "heavy cream", "soy sauce", "sugar"]

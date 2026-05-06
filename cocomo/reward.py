@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 import torch
 from config import BANNED_INGREDIENTS, SUBSTITUTIONS, REWARD_WEIGHTS

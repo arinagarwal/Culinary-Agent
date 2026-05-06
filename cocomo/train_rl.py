@@ -8,6 +8,7 @@ validity + novelty) rather than by imitating mechanically cleaned examples.
 Usage:
     python cocomo/train_rl.py
 """
+from __future__ import annotations
 
 import sys
 import os
@@ -21,7 +22,7 @@ from trl import GRPOTrainer, GRPOConfig
 
 from config import (
     MODEL_NAME, TRAIN_DISHES, LORA_CONFIG, GRPO_TRAINING_CONFIG,
-    GENERATION_CONFIG,
+    GENERATION_CONFIG, get_bnb_compute_dtype,
 )
 from receptor import Receptor
 from reward import RewardFunction
@@ -85,7 +86,7 @@ def train():
     print(f"Loading model: {MODEL_NAME}")
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=get_bnb_compute_dtype(),
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     if tokenizer.pad_token is None:

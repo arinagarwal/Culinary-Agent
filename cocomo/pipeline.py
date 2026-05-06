@@ -11,6 +11,7 @@ Usage (from code):
     pipeline = CoCoMoPipeline()
     result = pipeline.run("Spaghetti Carbonara")
 """
+from __future__ import annotations
 
 import sys
 import os
@@ -19,7 +20,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
-from config import MODEL_NAME, MFQ_ESCALATION_THRESHOLD
+from config import MODEL_NAME, MFQ_ESCALATION_THRESHOLD, get_bnb_compute_dtype
 from receptor import Receptor
 from unconsciousness import UnconsciousnessModule, _detect_banned
 from consciousness import ConsciousnessModule
@@ -29,7 +30,7 @@ from effector import Effector
 def _load_model_and_tokenizer(model_name: str):
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=get_bnb_compute_dtype(),
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(
@@ -59,7 +60,7 @@ class CoCoMoPipeline:
         self.feedback_log: list[dict] = []
         self.risk_snapshots: list[dict] = []  # per-dish MFQ state, populated by run_batch
 
-    def run(self, dish: str, past_substitutions: list | None = None) -> dict:
+    def run(self, dish: str, past_substitutions=None) -> dict:
         """
         Run one dish through the full Receptor → Unconscious → [Conscious] → Effector loop.
         Returns the result dict from Effector.output().

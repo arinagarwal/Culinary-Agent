@@ -17,6 +17,7 @@ Usage:
     # Evaluate with GRPO-trained LoRA weights:
     python cocomo/evaluate.py --weights cocomo/grpo_weights/final
 """
+from __future__ import annotations
 
 import sys
 import os
@@ -37,14 +38,17 @@ import numpy as np
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
 
-from config import MODEL_NAME, EVAL_DISHES, BANNED_INGREDIENTS
+from config import MODEL_NAME, EVAL_DISHES, BANNED_INGREDIENTS, get_bnb_compute_dtype
 from pipeline import CoCoMoPipeline
 
 
-def load_model(weights_path: str | None):
+from typing import Optional
+
+
+def load_model(weights_path: Optional[str]):
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=get_bnb_compute_dtype(),
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForCausalLM.from_pretrained(
@@ -58,7 +62,7 @@ def load_model(weights_path: str | None):
     return model, tokenizer
 
 
-def run_evaluation(weights_path: str | None = None) -> tuple[list[dict], list[dict]]:
+def run_evaluation(weights_path: Optional[str] = None) -> tuple:
     """
     Returns (results, risk_history).
     risk_history is a list of snapshots — one per dish — of the MFQ cuisine
@@ -87,7 +91,7 @@ def run_evaluation(weights_path: str | None = None) -> tuple[list[dict], list[di
     return results, risk_history
 
 
-def save_results(results: list[dict], out_path: str | None = None) -> dict:
+def save_results(results: list, out_path: Optional[str] = None) -> dict:
     if out_path is None:
         out_path = os.path.join(_HERE, "cocomo_results.json")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -120,9 +124,9 @@ def save_results(results: list[dict], out_path: str | None = None) -> dict:
 
 
 def compute_additional_metrics(
-    results: list[dict],
+    results: list,
     cocomo_summary: dict,
-    baseline_path: str | None = None,
+    baseline_path: Optional[str] = None,
 ) -> dict:
     """
     Computes escalation precision/recall/F1, substitution acceptance rate,
@@ -199,9 +203,9 @@ def compute_additional_metrics(
 
 def plot_violation_comparison(
     cocomo_results: dict,
-    baseline_path: str | None = None,
-    sft_path: str | None = None,
-    out_path: str | None = None,
+    baseline_path: Optional[str] = None,
+    sft_path: Optional[str] = None,
+    out_path: Optional[str] = None,
 ):
     if baseline_path is None:
         baseline_path = os.path.join(_ROOT, "final", "baseline_results.json")
@@ -255,8 +259,8 @@ def plot_violation_comparison(
 
 
 def plot_escalation_analysis(
-    results: list[dict],
-    out_path: str | None = None,
+    results: list,
+    out_path: Optional[str] = None,
 ):
     if out_path is None:
         out_path = os.path.join(_HERE, "escalation_analysis.png")
@@ -296,8 +300,8 @@ def plot_escalation_analysis(
 
 
 def plot_escalation_confusion_matrix(
-    results: list[dict],
-    out_path: str | None = None,
+    results: list,
+    out_path: Optional[str] = None,
 ):
     """
     2x2 confusion matrix: MFQ escalation decision vs. whether the draft
@@ -349,8 +353,8 @@ def plot_escalation_confusion_matrix(
 
 
 def plot_crit_validity_heatmap(
-    results: list[dict],
-    out_path: str | None = None,
+    results: list,
+    out_path: Optional[str] = None,
 ):
     """
     Heatmap of mean CRIT validity scores: ingredient (x) × cuisine (y).
@@ -396,8 +400,8 @@ def plot_crit_validity_heatmap(
 
 
 def plot_mfq_adaptation_curve(
-    risk_history: list[dict],
-    out_path: str | None = None,
+    risk_history: list,
+    out_path: Optional[str] = None,
 ):
     """
     Line chart of per-cuisine risk score as it evolves across the 100 eval dishes.
@@ -439,8 +443,8 @@ def plot_mfq_adaptation_curve(
 
 
 def plot_risk_score_histogram(
-    results: list[dict],
-    out_path: str | None = None,
+    results: list,
+    out_path: Optional[str] = None,
 ):
     """
     Distribution of dish risk scores, split by escalated vs. not escalated.

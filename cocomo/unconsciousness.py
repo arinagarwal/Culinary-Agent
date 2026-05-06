@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 import heapq
 import torch
@@ -5,6 +7,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from config import (
     MODEL_NAME, BANNED_INGREDIENTS, CUISINE_RISK_MAP,
     DRAFT_GENERATION_CONFIG, MFQ_ESCALATION_THRESHOLD,
+    get_bnb_compute_dtype,
 )
 
 _BANNED_PATTERNS = {
@@ -16,7 +19,7 @@ _BANNED_PATTERNS = {
 def _load_model_and_tokenizer(model_name: str):
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=get_bnb_compute_dtype(),
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(
@@ -52,7 +55,7 @@ class MFQScheduler:
         heapq.heappush(self._heap, (-risk, self._counter, schema))
         self._counter += 1
 
-    def pop(self) -> dict | None:
+    def pop(self):
         if not self._heap:
             return None
         _, _, schema = heapq.heappop(self._heap)
