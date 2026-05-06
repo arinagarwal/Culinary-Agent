@@ -21,7 +21,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 from config import MODEL_NAME, MFQ_ESCALATION_THRESHOLD
 from receptor import Receptor
-from unconsciousness import UnconsciousnessModule
+from unconsciousness import UnconsciousnessModule, _detect_banned
 from consciousness import ConsciousnessModule
 from effector import Effector
 
@@ -85,6 +85,7 @@ class CoCoMoPipeline:
 
         # 4. Effector: package output + send feedback to MFQ
         result = self.effector.output(recipe, schema, was_conscious, metadata)
+        result["draft_violations"] = _detect_banned(draft)
         feedback = self.effector.send_feedback(result, self.unconscious.scheduler)
         self.feedback_log.append(feedback)
 
