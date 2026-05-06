@@ -57,16 +57,23 @@ class CoCoMoPipeline:
         self.effector = Effector()
         self.escalation_threshold = escalation_threshold
         self.feedback_log: list[dict] = []
+        self.risk_snapshots: list[dict] = []  # per-dish MFQ state, populated by run_batch
 
     def run(self, dish: str, past_substitutions: list | None = None) -> dict:
         """
         Run one dish through the full Receptor → Unconscious → [Conscious] → Effector loop.
         Returns the result dict from Effector.output().
         """
-        # 1. Receptor: structured schema
         schema = self.receptor.process(dish, past_substitutions=past_substitutions)
+        return self._run_from_schema(schema)
 
-        # 2. Unconsciousness: fast draft + risk classification
+    def _run_from_schema(self, schema: dict) -> dict:
+        """
+        Inner pipeline from a pre-built schema onward.
+        Separated so run_batch() can push all schemas to the MFQ heap first,
+        then pop and process them in risk-priority order.
+        """
+        # Unconsciousness: fast draft + real-time risk classification
         draft = self.unconscious.draft_recipe(schema)
         risk = self.unconscious.classify_risk(draft, schema)
         schema["risk_score"] = risk  # update with real-time signal
@@ -74,7 +81,7 @@ class CoCoMoPipeline:
 
         escalated = self.unconscious.should_escalate(risk, self.escalation_threshold)
 
-        # 3. Consciousness (only if MFQ escalates)
+        # Consciousness (only if MFQ escalates)
         if escalated:
             recipe, metadata = self.conscious.generate(schema)
             was_conscious = True
@@ -83,26 +90,49 @@ class CoCoMoPipeline:
             metadata = {"validated_substitutions": {}, "prompt_used": "unconscious_draft"}
             was_conscious = False
 
-        # 4. Effector: package output + send feedback to MFQ
+        # Effector: package output + send feedback to MFQ
         result = self.effector.output(recipe, schema, was_conscious, metadata)
         result["draft_violations"] = _detect_banned(draft)
         feedback = self.effector.send_feedback(result, self.unconscious.scheduler)
         self.feedback_log.append(feedback)
 
-        # Carry working substitutions forward as memory for next call
         result["feedback"] = feedback
         return result
 
     def run_batch(self, dishes: list[str]) -> list[dict]:
-        """Run multiple dishes, passing working substitutions forward as memory."""
+        """
+        MFQ-ordered batch processing.
+
+        Phase 1 — receptor pre-pass: build schemas for all dishes and push onto
+        the MFQ heap. High-risk cuisines (Italian, French) get higher priority
+        and will be processed first.
+
+        Phase 2 — pop in priority order: highest-risk dishes are processed first,
+        so their feedback recalibrates cuisine risk scores before lower-risk dishes
+        of the same cuisine are encountered. Conscious attention is front-loaded
+        where constraint risk is highest.
+        """
+        # Phase 1: receptor pass → push all onto MFQ heap
+        for dish in dishes:
+            schema = self.receptor.process(dish)
+            self.unconscious.scheduler.push(schema)
+
+        # Phase 2: pop by risk priority → process each through the pipeline
         results = []
         cumulative_subs: list[dict] = []
-        for dish in dishes:
-            result = self.run(dish, past_substitutions=cumulative_subs)
-            # Accumulate substitutions that worked
+        self.risk_snapshots = []
+        while len(self.unconscious.scheduler) > 0:
+            schema = self.unconscious.scheduler.pop()
+            # Inject accumulated working substitutions as memory
+            schema["past_substitutions"] = list(cumulative_subs)
+            result = self._run_from_schema(schema)
             if result["substitutions_used"]:
                 cumulative_subs.append(result["substitutions_used"])
             results.append(result)
+            # Snapshot MFQ state after each dish so callers can plot adaptation
+            self.risk_snapshots.append(
+                dict(self.unconscious.scheduler._cuisine_risk_overrides)
+            )
         return results
 
 

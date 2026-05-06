@@ -67,20 +67,22 @@ def run_evaluation(weights_path: str | None = None) -> tuple[list[dict], list[di
     model, tokenizer = load_model(weights_path)
     pipeline = CoCoMoPipeline(model=model, tokenizer=tokenizer)
 
-    results = []
-    risk_history = []
-    total = len(EVAL_DISHES)
-    for i, dish in enumerate(EVAL_DISHES):
-        print(f"[{i+1}/{total}] {dish}", end="  ")
-        result = pipeline.run(dish)
-        results.append(result)
-        risk_history.append({
-            "idx": i,
-            "cuisine_risks": dict(pipeline.unconscious.scheduler._cuisine_risk_overrides),
-        })
-        status = "CONSCIOUS" if result["was_conscious"] else "unconscious"
-        violations = result["violations"] or ["none"]
-        print(f"[{status}] violations={violations}")
+    # run_batch uses the MFQ heap — dishes processed in cuisine-risk priority order
+    print(f"Phase 1: building schemas and pushing {len(EVAL_DISHES)} dishes onto MFQ heap...")
+    results = pipeline.run_batch(EVAL_DISHES)
+
+    # risk_snapshots captured inside run_batch after each dish — one per dish
+    risk_history = [
+        {"idx": i, "cuisine_risks": snapshot}
+        for i, snapshot in enumerate(pipeline.risk_snapshots)
+    ]
+
+    for i, result in enumerate(results):
+        print(
+            f"[{i+1}/{len(results)}] {result['dish']}  "
+            f"[{'CONSCIOUS' if result['was_conscious'] else 'unconscious'}]  "
+            f"violations={result['violations'] or ['none']}"
+        )
 
     return results, risk_history
 
