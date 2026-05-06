@@ -145,8 +145,8 @@ def train():
 
     trainer = GRPOTrainer(
         model=model,
-        tokenizer=tokenizer,
-        reward_funcs=[make_reward_fn(reward_fn)],  # must be a list
+        processing_class=tokenizer,
+        reward_funcs=[make_reward_fn(reward_fn)],
         args=grpo_cfg,
         train_dataset=dataset,
     )
