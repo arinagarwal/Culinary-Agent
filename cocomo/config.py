@@ -99,10 +99,13 @@ GENERATION_CONFIG = {
     "do_sample": True,
 }
 
-# Fast unconscious draft uses fewer tokens (speed over completeness)
+# Fast unconscious draft — fewer tokens than conscious generation but still sampled.
+# do_sample=False (greedy) causes Llama to loop on whitespace; must use sampling.
 DRAFT_GENERATION_CONFIG = {
     "max_new_tokens": 256,
-    "do_sample": False,   # greedy — habitual, fast
+    "do_sample": True,
+    "temperature": 0.7,
+    "top_p": 0.9,
 }
 
 # MFQ escalation threshold: risk scores above this go to Consciousness
