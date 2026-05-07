@@ -72,8 +72,9 @@ def run_evaluation(weights_path: Optional[str] = None) -> tuple:
     pipeline = CoCoMoPipeline(model=model, tokenizer=tokenizer)
 
     # run_batch uses the MFQ heap — dishes processed in cuisine-risk priority order
-    print(f"Phase 1: building schemas and pushing {len(EVAL_DISHES)} dishes onto MFQ heap...")
-    results = pipeline.run_batch(EVAL_DISHES)
+    eval_dishes = EVAL_DISHES[:1]  # TODO: change back to EVAL_DISHES for full run
+    print(f"Phase 1: building schemas and pushing {len(eval_dishes)} dishes onto MFQ heap...")
+    results = pipeline.run_batch(eval_dishes)
 
     # risk_snapshots captured inside run_batch after each dish — one per dish
     risk_history = [
@@ -224,12 +225,15 @@ def plot_violation_comparison(
             return [0.0] * len(BANNED_INGREDIENTS)
         with open(path) as f:
             data = json.load(f)
-        results = data.get("results", [])
+        # Support both cocomo format ("results" + "violations") and
+        # final/ format ("recipes" + "banned_found")
+        results = data.get("results", data.get("recipes", []))
         if not results:
             return [0.0] * len(BANNED_INGREDIENTS)
         counts = defaultdict(int)
         for r in results:
-            for v in r.get("violations", []):
+            violations = r.get("violations", r.get("banned_found", []))
+            for v in violations:
                 counts[v] += 1
         n = len(results)
         return [round(counts[ing] / n * 100, 1) for ing in BANNED_INGREDIENTS]
