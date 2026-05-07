@@ -241,6 +241,12 @@ def plot_violation_comparison(
     baseline_rates = load_rates(baseline_path)
     sft_rates = load_rates(sft_path)
 
+    print(f"DEBUG: baseline_path = {baseline_path}, exists = {os.path.exists(baseline_path)}")
+    print(f"DEBUG: sft_path = {sft_path}, exists = {os.path.exists(sft_path)}")
+    print(f"DEBUG: baseline_rates = {baseline_rates}")
+    print(f"DEBUG: sft_rates = {sft_rates}")
+    print(f"DEBUG: cocomo_rates = {cocomo_rates}")
+
     x = np.arange(len(BANNED_INGREDIENTS))
     width = 0.25
 
