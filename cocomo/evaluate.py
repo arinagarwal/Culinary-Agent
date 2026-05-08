@@ -72,9 +72,8 @@ def run_evaluation(weights_path: Optional[str] = None) -> tuple:
     pipeline = CoCoMoPipeline(model=model, tokenizer=tokenizer)
 
     # run_batch uses the MFQ heap — dishes processed in cuisine-risk priority order
-    eval_dishes = EVAL_DISHES[:1]  # TODO: change back to EVAL_DISHES for full run
-    print(f"Phase 1: building schemas and pushing {len(eval_dishes)} dishes onto MFQ heap...")
-    results = pipeline.run_batch(eval_dishes)
+    print(f"Phase 1: building schemas and pushing {len(EVAL_DISHES)} dishes onto MFQ heap...")
+    results = pipeline.run_batch(EVAL_DISHES)
 
     # risk_snapshots captured inside run_batch after each dish — one per dish
     risk_history = [
@@ -215,21 +214,19 @@ def plot_violation_comparison(
     if out_path is None:
         out_path = os.path.join(_HERE, "cocomo_vs_baseline_vs_sft.png")
 
-    cocomo_rates = [
-        cocomo_results["summary"]["violation_rates"].get(ing, 0.0)
-        for ing in BANNED_INGREDIENTS
-    ]
+    cocomo_base_path = os.path.join(_HERE, "cocomo_results_base.json")
+    cocomo_trained_path = os.path.join(_HERE, "cocomo_results_trained.json")
 
-    def load_rates(path):
+    def load_rates_from_file(path):
         if not os.path.exists(path):
-            return [0.0] * len(BANNED_INGREDIENTS)
+            return None
         with open(path) as f:
             data = json.load(f)
         # Support both cocomo format ("results" + "violations") and
         # final/ format ("recipes" + "banned_found")
         results = data.get("results", data.get("recipes", []))
         if not results:
-            return [0.0] * len(BANNED_INGREDIENTS)
+            return None
         counts = defaultdict(int)
         for r in results:
             violations = r.get("violations", r.get("banned_found", []))
@@ -238,26 +235,56 @@ def plot_violation_comparison(
         n = len(results)
         return [round(counts[ing] / n * 100, 1) for ing in BANNED_INGREDIENTS]
 
-    baseline_rates = load_rates(baseline_path)
-    sft_rates = load_rates(sft_path)
+    def load_cocomo_rates(path):
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            data = json.load(f)
+        rates = data.get("summary", {}).get("violation_rates", {})
+        if not rates:
+            return None
+        return [rates.get(ing, 0.0) for ing in BANNED_INGREDIENTS]
 
-    print(f"DEBUG: baseline_path = {baseline_path}, exists = {os.path.exists(baseline_path)}")
-    print(f"DEBUG: sft_path = {sft_path}, exists = {os.path.exists(sft_path)}")
-    print(f"DEBUG: baseline_rates = {baseline_rates}")
-    print(f"DEBUG: sft_rates = {sft_rates}")
-    print(f"DEBUG: cocomo_rates = {cocomo_rates}")
+    baseline_rates = load_rates_from_file(baseline_path)
+    sft_rates = load_rates_from_file(sft_path)
+    cocomo_base_rates = load_cocomo_rates(cocomo_base_path)
+    cocomo_trained_rates = load_cocomo_rates(cocomo_trained_path)
 
+    # Build list of series to plot
+    series = []
+    if baseline_rates is not None:
+        series.append(("Baseline", baseline_rates, "#e74c3c"))
+    if sft_rates is not None:
+        series.append(("SFT", sft_rates, "#f39c12"))
+    if cocomo_base_rates is not None:
+        series.append(("CoCoMo (base)", cocomo_base_rates, "#3498db"))
+    if cocomo_trained_rates is not None:
+        series.append(("CoCoMo (GRPO)", cocomo_trained_rates, "#2ecc71"))
+
+    # Fallback: if neither cocomo file exists, use the current run's results
+    if cocomo_base_rates is None and cocomo_trained_rates is None:
+        current_rates = [
+            cocomo_results["summary"]["violation_rates"].get(ing, 0.0)
+            for ing in BANNED_INGREDIENTS
+        ]
+        series.append(("CoCoMo", current_rates, "#2ecc71"))
+
+    if not series:
+        print("No data available to plot.")
+        return
+
+    n_series = len(series)
     x = np.arange(len(BANNED_INGREDIENTS))
-    width = 0.25
+    width = 0.8 / n_series
 
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.bar(x - width, baseline_rates, width, label="Baseline", color="#e74c3c", alpha=0.85)
-    ax.bar(x,         sft_rates,      width, label="SFT",      color="#f39c12", alpha=0.85)
-    ax.bar(x + width, cocomo_rates,   width, label="CoCoMo",   color="#2ecc71", alpha=0.85)
+    fig, ax = plt.subplots(figsize=(14, 6))
+    for i, (label, rates, color) in enumerate(series):
+        offset = (i - n_series / 2 + 0.5) * width
+        ax.bar(x + offset, rates, width, label=label, color=color, alpha=0.85)
 
     ax.set_xlabel("Banned Ingredient")
     ax.set_ylabel("% Recipes Containing Ingredient")
-    ax.set_title("Violation Rate: Baseline vs. SFT vs. CoCoMo")
+    ax.set_title("Violation Rate: Baseline vs. SFT vs. CoCoMo (base) vs. CoCoMo (GRPO)")
     ax.set_xticks(x)
     ax.set_xticklabels(BANNED_INGREDIENTS, rotation=15)
     ax.legend()
@@ -498,7 +525,14 @@ def main():
     print(f"{'='*60}\n")
 
     results, risk_history = run_evaluation(weights_path=args.weights)
-    output = save_results(results)
+
+    # Save to separate files depending on whether weights were used
+    if args.weights:
+        results_path = os.path.join(_HERE, "cocomo_results_trained.json")
+    else:
+        results_path = os.path.join(_HERE, "cocomo_results_base.json")
+
+    output = save_results(results, out_path=results_path)
 
     print("\n--- Violation Rates ---")
     for k, v in output["summary"]["violation_rates"].items():
