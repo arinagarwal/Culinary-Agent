@@ -23,3 +23,6 @@ Thumbs.db
 # Large data files (optional - uncomment if you don't want these in git)
 # rag_docs/*.npy
 # rag_docs/*.index
+
+# Hugging Face token
+hugging-face-token.md
