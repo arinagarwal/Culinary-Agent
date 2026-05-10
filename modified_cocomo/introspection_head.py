@@ -44,7 +44,7 @@ class IntrospectionHead(nn.Module):
         Returns:
             [batch, num_ingredients] — avoidance probabilities (sigmoid applied)
         """
-        return torch.sigmoid(self.linear(hidden_states))
+        return torch.sigmoid(self.linear(hidden_states.to(self.linear.weight.dtype)))
 
     def predict(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Inference mode: returns avoidance probabilities without grad."""
