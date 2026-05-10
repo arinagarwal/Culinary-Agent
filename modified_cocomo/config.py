@@ -5,19 +5,36 @@ Extends the base cocomo config with preference memory parameters.
 """
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'cocomo'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'final'))
+import importlib.util
 
-from config import (
-    MODEL_NAME, BANNED_INGREDIENTS, SUBSTITUTIONS,
-    CUISINE_RISK_MAP, CUISINE_RANGES,
-    GENERATION_CONFIG, DRAFT_GENERATION_CONFIG,
-    MFQ_ESCALATION_THRESHOLD,
-    LORA_CONFIG, GRPO_TRAINING_CONFIG, REWARD_WEIGHTS,
-    TRAIN_DISHES, EVAL_DISHES,
-    get_bnb_compute_dtype,
-)
-from dishes import DISHES
+# Load cocomo/config.py directly by filepath to avoid circular import
+# (this file is also named config.py)
+_cocomo_config_path = os.path.join(os.path.dirname(__file__), '..', 'cocomo', 'config.py')
+_spec = importlib.util.spec_from_file_location("cocomo_config", _cocomo_config_path)
+_cocomo_config = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_cocomo_config)
+
+MODEL_NAME = _cocomo_config.MODEL_NAME
+BANNED_INGREDIENTS = _cocomo_config.BANNED_INGREDIENTS
+SUBSTITUTIONS = _cocomo_config.SUBSTITUTIONS
+CUISINE_RISK_MAP = _cocomo_config.CUISINE_RISK_MAP
+CUISINE_RANGES = _cocomo_config.CUISINE_RANGES
+GENERATION_CONFIG = _cocomo_config.GENERATION_CONFIG
+DRAFT_GENERATION_CONFIG = _cocomo_config.DRAFT_GENERATION_CONFIG
+MFQ_ESCALATION_THRESHOLD = _cocomo_config.MFQ_ESCALATION_THRESHOLD
+LORA_CONFIG = _cocomo_config.LORA_CONFIG
+GRPO_TRAINING_CONFIG = _cocomo_config.GRPO_TRAINING_CONFIG
+REWARD_WEIGHTS = _cocomo_config.REWARD_WEIGHTS
+TRAIN_DISHES = _cocomo_config.TRAIN_DISHES
+EVAL_DISHES = _cocomo_config.EVAL_DISHES
+get_bnb_compute_dtype = _cocomo_config.get_bnb_compute_dtype
+
+# Load final/dishes.py
+_dishes_path = os.path.join(os.path.dirname(__file__), '..', 'final', 'dishes.py')
+_spec2 = importlib.util.spec_from_file_location("dishes_module", _dishes_path)
+_dishes_module = importlib.util.module_from_spec(_spec2)
+_spec2.loader.exec_module(_dishes_module)
+DISHES = _dishes_module.DISHES
 
 # ── Preference Memory Config ─────────────────────────────────────────────────
 
