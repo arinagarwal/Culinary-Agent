@@ -19,6 +19,7 @@ class Schema:
     past_substitutions: list[dict] = field(default_factory=list)
     validated_substitutions: dict = field(default_factory=dict)
     rival_reasons: list[str] = field(default_factory=list)
+    repair_violations: list[str] = field(default_factory=list)
 
 
 class CriticalThinking:
@@ -97,17 +98,21 @@ class CriticalThinking:
 
         return score, [support_text], [rival_text]
 
-    def validate_all(self, schema: Schema, draft: str = "") -> dict:
+    def validate_all(self, schema: Schema, draft: str = "", skip: set | None = None) -> dict:
         """
         Validates substitutions only for banned ingredients that actually
         appear in the draft recipe. Skips ingredients not present — avoids
         15 LLM calls per dish when only 1-2 ingredients are relevant.
+        `skip` allows the caller to exclude ingredients already covered by
+        memory-sourced substitutions (architectural change 3).
         Returns {original: {substitute, validity_score}}.
         """
         lower_draft = draft.lower()
+        skip = skip or set()
         validated = {}
         for ingredient in schema.constraints:
-            # Only run CRIT if the ingredient showed up in the draft
+            if ingredient in skip:
+                continue
             if draft and ingredient.lower() not in lower_draft:
                 continue
             substitute = SUBSTITUTIONS.get(ingredient, None)
@@ -195,13 +200,14 @@ class PromptTemplateGenerator:
         for ingredient, info in validated_substitutions.items():
             sub = info["substitute"]
             score = info["validity_score"]
+            source = info.get("source", "")
             if score >= 0.6:
+                tag = "memory-proven" if source == "memory" else f"validity: {score:.1f}/1.0"
                 sub_instructions.append(
                     f"- Instead of {ingredient}, use {sub} "
-                    f"(culinarily appropriate for {schema.cuisine} cuisine, validity: {score:.1f}/1.0)"
+                    f"(culinarily appropriate for {schema.cuisine} cuisine, {tag})"
                 )
             else:
-                # Low validity — ask model to find its own substitute
                 sub_instructions.append(
                     f"- Avoid {ingredient}; find the most appropriate substitute "
                     f"for authentic {schema.cuisine} cuisine"
@@ -210,10 +216,20 @@ class PromptTemplateGenerator:
         subs_text = "\n".join(sub_instructions) if sub_instructions else \
             f"Avoid all of: {', '.join(schema.constraints)}"
 
+        repair_section = ""
+        if schema.repair_violations:
+            repair_section = (
+                f"\n\nWARNING — a previous draft still contained: "
+                f"{', '.join(schema.repair_violations)}. "
+                f"These are strictly banned. Do not use them in any form, "
+                f"including derivatives or preparations that contain the banned ingredient."
+            )
+
         prompt = (
             f"Write an authentic {schema.cuisine} recipe for {schema.dish}.\n\n"
             f"Ingredient constraints (dietary requirement — do not use these ingredients):\n"
-            f"{subs_text}\n\n"
+            f"{subs_text}"
+            f"{repair_section}\n\n"
             f"Include: a title, an Ingredients: section with quantities, "
             f"and a Instructions: section with numbered steps.\n"
             f"Ensure the recipe remains authentic to {schema.cuisine} cuisine "
@@ -257,11 +273,25 @@ class ConsciousnessModule:
             constraints=schema_dict["constraints"],
             risk_score=schema_dict["risk_score"],
             past_substitutions=schema_dict.get("past_substitutions", []),
+            repair_violations=schema_dict.get("repair_violations", []),
         )
 
-        # Step 2: CRIT validation — only on ingredients present in draft
+        # Extract memory-sourced substitutions from past_substitutions (change 3).
+        # These skip CRIT — they are already proven for this cuisine×ingredient pair.
+        memory_validated = {}
+        for sub_dict in schema.past_substitutions:
+            for ingredient, info in sub_dict.items():
+                if info.get("source") == "memory" and ingredient in schema.constraints:
+                    memory_validated[ingredient] = {
+                        "substitute": info["substitute"],
+                        "validity_score": info.get("validity_score", 0.8),
+                        "source": "memory",
+                    }
+
+        # Step 2: CRIT validation — skip ingredients already covered by memory
         draft = schema_dict.get("draft", "")
-        validated = self.crit.validate_all(schema, draft=draft)
+        validated = self.crit.validate_all(schema, draft=draft, skip=set(memory_validated.keys()))
+        validated.update(memory_validated)
         schema.validated_substitutions = validated
 
         # Step 3: Explore novel substitutions for low-validity ones
