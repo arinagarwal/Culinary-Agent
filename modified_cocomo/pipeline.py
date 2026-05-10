@@ -25,9 +25,11 @@ from peft import PeftModel
 
 from config import (
     MODEL_NAME, MFQ_ESCALATION_THRESHOLD, EVAL_DISHES,
+    BANNED_INGREDIENTS, INTROSPECTION_CONFIG,
     get_bnb_compute_dtype,
 )
 from preference_memory import PreferenceMemory
+from introspection_head import IntrospectionHead, IntrospectionTrainer
 from receptor import Receptor
 from unconsciousness import UnconsciousnessModule, MFQScheduler, _detect_banned
 from consciousness import ConsciousnessModule
@@ -233,14 +235,132 @@ class ModifiedCoCoMoPipeline:
         return results
 
 
-if __name__ == "__main__":
-    print("Loading Modified CoCoMo Pipeline...")
-    pipeline = ModifiedCoCoMoPipeline()
+class IntrospectivePipeline(ModifiedCoCoMoPipeline):
+    """
+    Extends ModifiedCoCoMoPipeline with an introspection head that predicts
+    the model's own avoidance behavior from internal hidden states.
 
-    if not pipeline.memory.get_memory():
-        print("\nNo preference memory found. Extracting initial preferences...")
-        memory_text = pipeline.memory.extract(pipeline.model, pipeline.tokenizer)
-        print(f"\nExtracted preference memory:\n{'='*60}\n{memory_text}\n{'='*60}")
+    At each generation:
+      1. Encode the prompt → extract hidden state
+      2. Introspection head predicts avoidance probabilities
+      3. Predictions are converted to text and injected as context
+      4. Normal pipeline runs (with introspection-derived self-knowledge)
+
+    This produces verifiable internal self-knowledge: we can measure
+    what the model "internally knows" vs what it actually does vs what it says.
+    """
+
+    def __init__(self, model=None, tokenizer=None, weights_path: str | None = None,
+                 memory: PreferenceMemory | None = None,
+                 introspection_path: str | None = None,
+                 escalation_threshold: float = MFQ_ESCALATION_THRESHOLD):
+        super().__init__(
+            model=model, tokenizer=tokenizer, weights_path=weights_path,
+            memory=memory, escalation_threshold=escalation_threshold,
+        )
+
+        # Load or initialize introspection head
+        hidden_dim = self.model.config.hidden_size
+        self.introspection_head = IntrospectionHead(
+            hidden_dim=hidden_dim,
+            num_ingredients=len(BANNED_INGREDIENTS),
+        ).to(self.model.device)
+
+        self.introspection_trainer = IntrospectionTrainer(
+            head=self.introspection_head,
+            banned_ingredients=BANNED_INGREDIENTS,
+            save_dir=INTROSPECTION_CONFIG["save_dir"],
+        )
+
+        if introspection_path:
+            self.introspection_trainer.load(introspection_path)
+        else:
+            self.introspection_trainer.load()
+
+        self.introspection_log: list[dict] = []
+
+    def introspect(self, prompt: str) -> dict:
+        """
+        Run the introspection head on a prompt to get avoidance predictions
+        BEFORE generation happens.
+        """
+        return self.introspection_trainer.get_avoidance_predictions(
+            self.model, self.tokenizer, prompt
+        )
+
+    def run(self, dish: str, past_substitutions=None) -> dict:
+        """Run with introspection: predict behavior first, then generate."""
+        schema = self.receptor.process(dish, past_substitutions=past_substitutions)
+
+        # Introspect: what does the model internally predict it will do?
+        base_prompt = f"Write a recipe for {dish}. Include a title, an Ingredients: section, and a Instructions: section."
+        introspection_preds = self.introspect(base_prompt)
+        introspection_text = self.introspection_trainer.predictions_to_text(introspection_preds)
+
+        # Inject introspection as additional self-knowledge into memory
+        original_memory = self.memory.get_memory()
+        augmented_memory = original_memory
+        if augmented_memory:
+            augmented_memory += f"\n\nIntrospection (internal prediction): {introspection_text}"
+        else:
+            augmented_memory = f"Introspection (internal prediction): {introspection_text}"
+
+        # Temporarily set the augmented memory for this generation
+        self.memory.current_memory = augmented_memory
+
+        # Run normal pipeline
+        result = self._run_from_schema(schema)
+
+        # Restore original memory
+        self.memory.current_memory = original_memory
+
+        # Add introspection data to result
+        result["introspection"] = {
+            "predictions": introspection_preds,
+            "text": introspection_text,
+        }
+
+        # Verify: compare prediction to actual behavior
+        actual_avoidance = {
+            ing: ing not in result["violations"]
+            for ing in BANNED_INGREDIENTS
+        }
+        introspection_accuracy = sum(
+            1 for ing in BANNED_INGREDIENTS
+            if (introspection_preds[ing] > 0.5) == actual_avoidance[ing]
+        ) / len(BANNED_INGREDIENTS)
+
+        result["introspection"]["actual_avoidance"] = actual_avoidance
+        result["introspection"]["accuracy"] = round(introspection_accuracy, 3)
+
+        self.introspection_log.append({
+            "dish": dish,
+            "predictions": introspection_preds,
+            "actual": actual_avoidance,
+            "accuracy": introspection_accuracy,
+        })
+
+        return result
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--introspective", action="store_true",
+                        help="Use introspective pipeline (requires trained head)")
+    args = parser.parse_args()
+
+    if args.introspective:
+        print("Loading Introspective CoCoMo Pipeline...")
+        pipeline = IntrospectivePipeline()
+    else:
+        print("Loading Modified CoCoMo Pipeline...")
+        pipeline = ModifiedCoCoMoPipeline()
+
+        if not pipeline.memory.get_memory():
+            print("\nNo preference memory found. Extracting initial preferences...")
+            memory_text = pipeline.memory.extract(pipeline.model, pipeline.tokenizer)
+            print(f"\nExtracted preference memory:\n{'='*60}\n{memory_text}\n{'='*60}")
 
     test_dish = "Spaghetti Carbonara"
     print(f"\nRunning pipeline for: {test_dish}")
@@ -249,5 +369,9 @@ if __name__ == "__main__":
     print(f"Risk score:    {result['risk_score']:.3f}")
     print(f"Was conscious: {result['was_conscious']}")
     print(f"Violations:    {result['violations']}")
-    print(f"Memory active: {result['memory_active']}")
+    print(f"Memory active: {result.get('memory_active', 'N/A')}")
+    if "introspection" in result:
+        print(f"\n--- Introspection ---")
+        print(f"  Predictions: {result['introspection']['predictions']}")
+        print(f"  Accuracy:    {result['introspection']['accuracy']:.1%}")
     print(f"\n--- Recipe ---\n{result['recipe'][:800]}")

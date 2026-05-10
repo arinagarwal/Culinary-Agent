@@ -52,3 +52,12 @@ GRPO_TRAINING_CONFIG_MODIFIED = {
     "output_dir": "modified_cocomo/grpo_weights",
     "num_train_epochs": 2,
 }
+
+# ── Introspection Head Config ─────────────────────────────────────────────────
+
+INTROSPECTION_CONFIG = {
+    "lr": 1e-3,
+    "save_dir": "modified_cocomo/introspection_weights",
+    "train_batches_per_epoch": 50,
+    "warmup_dishes": 100,
+}
