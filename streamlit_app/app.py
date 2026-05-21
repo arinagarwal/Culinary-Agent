@@ -631,6 +631,99 @@ DEFAULT_KITCHEN_STATE = {
 
 st.title("Culinary Agent")
 st.markdown("*AI-powered recipe generation with flavor science*")
+
+# ─── About Section ─────────────────────────────────────────────────────────────
+
+with st.expander("About this project", expanded=False):
+    st.markdown("""
+## How it works
+
+This agent generates recipes that are not just culinarily valid, but **scientifically optimized
+for flavor**. It goes beyond simple recipe retrieval by using a multi-stage pipeline that
+combines LLM reasoning with computational flavor chemistry.
+
+The core insight: **foods taste good together when they share volatile aroma compounds
+(odorants)**. When you eat, ~80% of what you perceive as "flavor" actually comes from
+retronasal olfaction — volatile molecules traveling from your mouth to your nose. Two
+ingredients that share the same odorant molecule will produce a harmonious, reinforcing
+flavor when combined. This is why tomato + basil works (they share linalool and methyl
+eugenol) or why chocolate + coffee works (they share pyrazines).
+
+This agent exploits that principle computationally:
+
+1. **Intent Parsing** — Your natural language request is parsed into structured constraints
+   (dietary needs, time limits, banned ingredients) and soft preferences (cuisine, spice level)
+   using an LLM.
+
+2. **Constrained Generation** — Given your intent and kitchen inventory, the LLM generates
+   diverse candidate recipes. Each is validated against your hard constraints; failures are
+   automatically regenerated.
+
+3. **Odorant Graph Traversal** — For each recipe's key flavor ingredients, we traverse a
+   bipartite graph of 605 foods and 492 odorant compounds to find ingredients that share
+   rare aroma molecules with the dish. Rare odorants are weighted higher because common
+   odorants (present in many foods) contribute less perceptual distinctiveness.
+
+4. **RAG-Enhanced Pairing** — Two FAISS vector indices are queried to ground suggestions in
+   culinary literature:
+   - **Pairing Index** (2,342 docs): Ingredient odorant profiles + *The Flavor Bible* pairings
+   - **Recipe Index** (4,878 docs): Full cookbook recipes from 60+ digitized cookbooks
+
+5. **Recipe Enhancement** — The LLM integrates the scientifically-suggested ingredients into
+   the original recipe, producing a version with deeper, more complex flavor.
+
+6. **Composite Scoring** — Each enhanced recipe is scored on three axes:
+   - *RAG co-occurrence*: How often ingredient pairs appear together in real cookbooks
+   - *Odorant overlap*: Shared volatile compounds between ingredient pairs
+   - *LLM evaluation*: Culinary realism and balance judged by the model
+
+   The final score is a weighted sum (30/30/40) that balances empirical flavor science
+   with holistic culinary judgment.
+
+---
+
+### Data Sources
+
+| Source | What it provides |
+|--------|-----------------|
+| [FlavorDB](https://cosylab.iiitd.edu.in/flavordb) | Odorant-to-food mappings for 605 foods and 492 volatile compounds, scraped from the food chemistry database |
+| *The Flavor Bible* (Karen Page & Andrew Dornenburg) | Expert chef pairing recommendations, chunked and embedded |
+| Internet Archive Cookbook Collection | 60+ digitized public-domain cookbooks providing real recipe co-occurrence data |
+
+---
+""")
+
+    st.markdown("### Architecture")
+    st.markdown("""
+```mermaid
+graph TD
+    A["User Query<br/><i>'Give me an Asian tofu recipe'</i>"] --> B["Intent Parser<br/>(LLM)"]
+    B --> C{{"Structured Intent<br/>constraints + preferences"}}
+    C --> D["Recipe Generator<br/>(LLM + Kitchen State)"]
+    D --> E["Constraint Validator"]
+    E -->|"fail"| D
+    E -->|"pass"| F["Odorant Graph<br/>Traversal"]
+
+    G[("FlavorDB<br/>605 foods<br/>492 odorants")] --> F
+    H[("Pairing RAG Index<br/>2,342 docs")] --> I["RAG-Enhanced<br/>Suggestion Engine"]
+    F --> I
+
+    I --> J["Recipe Enhancer<br/>(LLM)"]
+    J --> K["Composite Scorer"]
+
+    L[("Recipe RAG Index<br/>4,878 docs")] --> K
+    G --> K
+
+    K --> M["Ranked Results"]
+
+    style A fill:#FF6B35,color:#fff
+    style M fill:#2E8B57,color:#fff
+    style G fill:#4169E1,color:#fff
+    style H fill:#4169E1,color:#fff
+    style L fill:#4169E1,color:#fff
+```
+""")
+
 st.markdown("---")
 
 # Sidebar for configuration
