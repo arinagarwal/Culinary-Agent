@@ -730,15 +730,15 @@ st.markdown("---")
 with st.sidebar:
     st.header("Configuration")
 
-    # Try to load from Streamlit secrets first, then fall back to user input
-    default_key = ""
-    if hasattr(st, "secrets") and "GROQ_API_KEY" in st.secrets:
-        default_key = st.secrets["GROQ_API_KEY"]
-        os.environ["GROQ_API_KEY"] = default_key
-
-    api_key = st.text_input("Groq API Key", value=default_key, type="password", help="Get a free key at console.groq.com")
-    if api_key:
-        os.environ["GROQ_API_KEY"] = api_key
+    # Load from Streamlit secrets (server-side only, never sent to browser)
+    has_server_key = hasattr(st, "secrets") and "GROQ_API_KEY" in st.secrets
+    if has_server_key:
+        os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
+        st.success("API key configured (server)")
+    else:
+        api_key = st.text_input("Groq API Key", type="password", help="Get a free key at console.groq.com")
+        if api_key:
+            os.environ["GROQ_API_KEY"] = api_key
 
     model_name = st.selectbox("LLM Model", ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"])
 
