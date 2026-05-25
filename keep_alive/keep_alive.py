@@ -6,7 +6,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 import os
 
-STREAMLIT_URL = os.environ.get("STREAMLIT_APP_URL", "https://culinary-agent-arinagarwal.streamlit.app/")
+STREAMLIT_URL = os.environ.get("STREAMLIT_APP_URL") or "https://culinary-agent-arinagarwal.streamlit.app/"
 
 
 def main():
