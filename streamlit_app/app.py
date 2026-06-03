@@ -649,36 +649,56 @@ ingredients that share the same odorant molecule will produce a harmonious, rein
 flavor when combined. This is why tomato + basil works (they share linalool and methyl
 eugenol) or why chocolate + coffee works (they share pyrazines).
 
-This agent exploits that principle computationally:
+This agent exploits that principle computationally through a five-stage pipeline:
 
-1. **Intent Parsing** — Your natural language request is parsed into structured constraints
-   (dietary needs, time limits, banned ingredients) and soft preferences (cuisine, spice level)
-   using an LLM.
+### 1. Intent Parsing (LLM as Semantic Parser)
 
-2. **Constrained Generation** — Given your intent and kitchen inventory, the LLM generates
-   diverse candidate recipes. Each is validated against your hard constraints; failures are
-   automatically regenerated.
+Your natural language request is decomposed into a structured intent representation with
+three layers: **hard constraints** (time limits, macronutrient bounds, dietary restrictions,
+banned ingredients), **soft objectives** (taste vs. health vs. authenticity priority weights),
+and **preferences** (cuisine affinities, spice tolerance, desired ingredients). This structured
+form enables downstream constraint checking that pure generation cannot guarantee.
 
-3. **Odorant Graph Traversal** — For each recipe's key flavor ingredients, we traverse a
-   bipartite graph of 605 foods and 492 odorant compounds to find ingredients that share
-   rare aroma molecules with the dish. Rare odorants are weighted higher because common
-   odorants (present in many foods) contribute less perceptual distinctiveness.
+### 2. Constrained Generation with Validation Loop
 
-4. **RAG-Enhanced Pairing** — Two FAISS vector indices are queried to ground suggestions in
-   culinary literature:
-   - **Pairing Index** (2,342 docs): Ingredient odorant profiles + *The Flavor Bible* pairings
-   - **Recipe Index** (4,878 docs): Full cookbook recipes from 60+ digitized cookbooks
+Given your structured intent and full kitchen inventory, the LLM generates three maximally
+diverse candidate recipes. Each candidate is then programmatically validated against your hard
+constraints — time estimates, vegetarian compliance, banned/excluded ingredients. Recipes that
+violate constraints are automatically regenerated (up to 3 retries per slot) with deduplication
+to prevent the same dish from reappearing.
 
-5. **Recipe Enhancement** — The LLM integrates the scientifically-suggested ingredients into
-   the original recipe, producing a version with deeper, more complex flavor.
+### 3. RAG-Augmented Flavor Enhancement
 
-6. **Composite Scoring** — Each enhanced recipe is scored on three axes:
-   - *RAG co-occurrence*: How often ingredient pairs appear together in real cookbooks
-   - *Odorant overlap*: Shared volatile compounds between ingredient pairs
-   - *LLM evaluation*: Culinary realism and balance judged by the model
+For each candidate, the system identifies the recipe's prominent flavor-driving ingredients
+and queries two FAISS vector indices using BGE-large embeddings:
+- **Pairing Index** (2,342 documents): Contains per-ingredient odorant profiles from FlavorDB
+  and expert pairing knowledge from *The Flavor Bible*
+- **Recipe Index** (4,878 documents): Full recipes from 63 digitized cookbooks providing
+  real-world co-occurrence evidence
 
-   The final score is a weighted sum (30/30/40) that balances empirical flavor science
-   with holistic culinary judgment.
+The retrieved odorant context and pairing evidence are fed to the LLM alongside the kitchen
+state, grounding its ingredient suggestions in flavor chemistry rather than relying on
+parametric knowledge alone. The LLM then integrates these suggestions into the original
+recipe, producing an enhanced version with deeper flavor complexity.
+
+### 4. Composite Scoring (Three Independent Axes)
+
+Each enhanced recipe is scored through a multi-signal evaluation that no single method could
+provide alone:
+
+- **RAG Co-occurrence (30%)** — For every ingredient pair in the recipe, a vector search
+  checks how often both ingredients appear together in the 4,878-document cookbook corpus.
+  High co-occurrence means real chefs actually combine them.
+
+- **Odorant Overlap (30%)** — For every ingredient pair, the system computes the ratio of
+  shared volatile compounds to total unique volatiles. This is a direct chemical measure of
+  flavor compatibility — ingredients that share odorants reinforce each other perceptually.
+
+- **LLM Evaluation (40%)** — The model scores overall culinary realism and flavor balance,
+  capturing holistic qualities (textural contrast, cooking technique coherence) that
+  pairwise molecular analysis misses.
+
+The weighted sum (30/30/40) balances empirical flavor science with holistic culinary judgment.
 
 ---
 
@@ -686,9 +706,34 @@ This agent exploits that principle computationally:
 
 | Source | What it provides |
 |--------|-----------------|
-| [FlavorDB](https://cosylab.iiitd.edu.in/flavordb) | Odorant-to-food mappings for 605 foods and 492 volatile compounds, scraped from the food chemistry database |
+| [FlavorDB](https://cosylab.iiitd.edu.in/flavordb) | Odorant-to-food mappings for 605 foods and 492 volatile compounds |
 | *The Flavor Bible* (Karen Page & Andrew Dornenburg) | Expert chef pairing recommendations, chunked and embedded |
-| Internet Archive Cookbook Collection | 60+ digitized public-domain cookbooks providing real recipe co-occurrence data |
+| Internet Archive Cookbook Collection | 63 digitized public-domain cookbooks providing real recipe co-occurrence data |
+
+### Full Report
+
+For a detailed writeup of the system design, evaluation methodology, and results:
+""")
+    import base64
+    report_path = os.path.join(os.path.dirname(__file__), "Culinary_Agent_Report (1).pdf")
+    with open(report_path, "rb") as f:
+        pdf_bytes = f.read()
+    pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+    if st.button("View Full Report (PDF)"):
+        st.components.v1.html(
+            f'<iframe src="data:application/pdf;base64,{pdf_b64}" width="100%" height="800" type="application/pdf"></iframe>',
+            height=820,
+        )
+    st.markdown("""
+---
+
+### Technical Stack
+
+- **LLM**: Llama 3.3 70B (via Groq) for intent parsing, recipe generation, enhancement, and evaluation
+- **Embeddings**: BGE-large-en-v1.5 for semantic retrieval over flavor and recipe corpora
+- **Vector Search**: FAISS indices for sub-millisecond nearest-neighbor lookup
+- **Structured Output**: Pydantic validation ensures LLM outputs conform to strict recipe schemas
+- **Constraint Enforcement**: Programmatic validation loop catches and regenerates non-compliant recipes
 
 ---
 """)
@@ -697,27 +742,27 @@ This agent exploits that principle computationally:
     st.markdown("""
 ```mermaid
 graph TD
-    A["User Query<br/><i>'Give me an Asian tofu recipe'</i>"] --> B["Intent Parser<br/>(LLM)"]
-    B --> C{{"Structured Intent<br/>constraints + preferences"}}
+    A["User Query<br/><i>'Give me an Asian tofu recipe'</i>"] --> B["Intent Parser<br/>(Llama 3.3 70B)"]
+    B --> C{{"Structured Intent<br/>hard constraints + soft objectives + preferences"}}
     C --> D["Recipe Generator<br/>(LLM + Kitchen State)"]
     D --> E["Constraint Validator"]
-    E -->|"fail"| D
-    E -->|"pass"| F["Odorant Graph<br/>Traversal"]
+    E -->|"fail (up to 3x)"| D
+    E -->|"pass"| F["RAG-Augmented<br/>Suggestion Engine"]
 
-    G[("FlavorDB<br/>605 foods<br/>492 odorants")] --> F
-    H[("Pairing RAG Index<br/>2,342 docs")] --> I["RAG-Enhanced<br/>Suggestion Engine"]
-    F --> I
+    H[("Pairing Index<br/>2,342 docs<br/>BGE-large embeddings")] --> F
+    G[("FlavorDB<br/>605 foods × 492 odorants")] -.->|"odorant context"| H
 
-    I --> J["Recipe Enhancer<br/>(LLM)"]
+    F --> J["Recipe Enhancer<br/>(LLM)"]
     J --> K["Composite Scorer"]
 
-    L[("Recipe RAG Index<br/>4,878 docs")] --> K
-    G --> K
+    L[("Recipe Index<br/>4,878 docs<br/>63 cookbooks")] -->|"co-occurrence"| K
+    G -->|"odorant overlap"| K
+    M["LLM Evaluator"] -->|"culinary realism"| K
 
-    K --> M["Ranked Results"]
+    K --> N["Ranked Results<br/>(30% RAG + 30% odorant + 40% LLM)"]
 
     style A fill:#FF6B35,color:#fff
-    style M fill:#2E8B57,color:#fff
+    style N fill:#2E8B57,color:#fff
     style G fill:#4169E1,color:#fff
     style H fill:#4169E1,color:#fff
     style L fill:#4169E1,color:#fff
@@ -740,7 +785,7 @@ with st.sidebar:
         if api_key:
             os.environ["GROQ_API_KEY"] = api_key
 
-    model_name = st.selectbox("LLM Model", ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"])
+    model_name = "llama-3.3-70b-versatile"
 
     st.markdown("---")
     st.header("Kitchen Inventory")
