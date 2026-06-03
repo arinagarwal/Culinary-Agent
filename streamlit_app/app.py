@@ -751,6 +751,12 @@ For a detailed writeup of the system design, evaluation methodology, and results
         </script>
         """
         st.components.v1.html(pdf_viewer_html, height=820)
+    st.download_button(
+        label="Download Report (PDF)",
+        data=pdf_bytes,
+        file_name="Culinary_Agent_Report.pdf",
+        mime="application/pdf",
+    )
     st.markdown("""
 ---
 
