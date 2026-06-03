@@ -720,10 +720,37 @@ For a detailed writeup of the system design, evaluation methodology, and results
         pdf_bytes = f.read()
     pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
     if st.button("View Full Report (PDF)"):
-        st.components.v1.html(
-            f'<iframe src="data:application/pdf;base64,{pdf_b64}" width="100%" height="800" type="application/pdf"></iframe>',
-            height=820,
-        )
+        pdf_viewer_html = f"""
+        <div id="pdf-viewer" style="width:100%; height:800px; overflow-y:auto; background:#525659;"></div>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+        <script>
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+            var pdfData = atob('{pdf_b64}');
+            var uint8Array = new Uint8Array(pdfData.length);
+            for (var i = 0; i < pdfData.length; i++) {{
+                uint8Array[i] = pdfData.charCodeAt(i);
+            }}
+            pdfjsLib.getDocument({{data: uint8Array}}).promise.then(function(pdf) {{
+                var viewer = document.getElementById('pdf-viewer');
+                for (var pageNum = 1; pageNum <= pdf.numPages; pageNum++) {{
+                    (function(num) {{
+                        pdf.getPage(num).then(function(page) {{
+                            var scale = 1.5;
+                            var viewport = page.getViewport({{scale: scale}});
+                            var canvas = document.createElement('canvas');
+                            canvas.style.display = 'block';
+                            canvas.style.margin = '10px auto';
+                            canvas.width = viewport.width;
+                            canvas.height = viewport.height;
+                            viewer.appendChild(canvas);
+                            page.render({{canvasContext: canvas.getContext('2d'), viewport: viewport}});
+                        }});
+                    }})(pageNum);
+                }}
+            }});
+        </script>
+        """
+        st.components.v1.html(pdf_viewer_html, height=820)
     st.markdown("""
 ---
 
