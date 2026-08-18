@@ -18,7 +18,11 @@ from groq import Groq
 
 load_dotenv()
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-MODEL = "llama-3.3-70b-versatile"
+# Groq decommissioned llama-3.3-70b-versatile on 2026-08-16; Qwen3.6 27B is the
+# replacement. reasoning_effort="none" suppresses Qwen3's <think> block so the
+# response text stays comparable to the original Llama runs.
+MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
+REASONING_KWARGS = {"reasoning_effort": "none"} if "qwen3" in MODEL.lower() else {}
 
 # ── Load learned models ──────────────────────────────────────────────────────
 
@@ -55,6 +59,7 @@ def call_llm(system_prompt, user_prompt, temperature=0.7):
         ],
         max_tokens=400,
         temperature=temperature,
+        **REASONING_KWARGS,
     )
     return r.choices[0].message.content.strip()
 

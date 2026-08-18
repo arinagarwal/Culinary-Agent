@@ -7,7 +7,7 @@ SelfModel learning on top.  Shares only on-disk data files with the baseline
 Culinary_agent.ipynb — no code imports from the notebook.
 
 Supports two backends:
-  - "groq": Remote API (Llama 3.3 70B via Groq) — preferences via prompt injection
+  - "groq": Remote API (Qwen3.6 27B via Groq) — preferences via prompt injection
   - "local": Local MLX model (Llama 3.1 8B) with LoRA adapters — preferences
     encoded in trainable model weights
 """
@@ -24,6 +24,9 @@ from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 from typing import List, Optional, Union
 from dotenv import load_dotenv
+
+# ── local ─────────────────────────────────────────────────────────────────────
+from local_model import DEFAULT_GROQ_MODEL, LLMBackend
 
 # faiss is lazy-loaded to avoid conflicts with PyTorch on Apple Silicon
 _faiss = None
@@ -46,13 +49,12 @@ if BACKEND_TYPE == "groq":
     from groq import Groq
     os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY", "YOUR_GROQ_API_KEY_HERE")
     client = Groq()
-    MODEL_NAME = "llama-3.3-70b-versatile"
+    MODEL_NAME = DEFAULT_GROQ_MODEL
     _llm_backend = None  # initialized lazily
 else:
     client = None
     MODEL_NAME = None
 
-from local_model import LLMBackend
 
 def _get_backend() -> LLMBackend:
     """Get or create the LLM backend singleton."""
@@ -61,7 +63,7 @@ def _get_backend() -> LLMBackend:
         if BACKEND_TYPE == "groq":
             _llm_backend = LLMBackend(
                 backend="groq",
-                model_name="llama-3.3-70b-versatile",
+                model_name=MODEL_NAME,
             )
         elif BACKEND_TYPE == "local":
             _llm_backend = LLMBackend(
@@ -1315,7 +1317,9 @@ User request:
         prompt=prompt,
         system_prompt=SYSTEM_PROMPT,
         temperature=temperature,
-        max_tokens=200,
+        # Qwen3.6 pretty-prints its JSON, so the intent object needs more room
+        # than the ~200 tokens Llama 3.3 used to emit.
+        max_tokens=500,
     )
 
     _SPICE_LABEL_MAP = {
@@ -1918,7 +1922,7 @@ def suggest_recipe_additions(
             prompt=prompt,
             system_prompt="",
             temperature=temperature,
-            max_tokens=800,
+            max_tokens=1200,
         )
 
         text = response

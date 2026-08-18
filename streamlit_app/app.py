@@ -11,6 +11,17 @@ from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 from groq import Groq
 
+# ─── Model Config ──────────────────────────────────────────────────────────────
+# Groq decommissioned llama-3.3-70b-versatile on 2026-08-16 and no longer serves
+# a general-purpose Llama chat model, so we run on Qwen3.6 27B (cheap, 131k
+# context, strong at the structured-JSON recipe prompts). Override with GROQ_MODEL.
+MODEL_NAME = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
+
+# Qwen3 models emit a <think> block before their answer by default, which breaks
+# JSON parsing and eats the max_tokens budget. reasoning_effort="none" turns
+# thinking off so the model behaves like a plain instruct model.
+REASONING_KWARGS = {"reasoning_effort": "none"} if "qwen3" in MODEL_NAME.lower() else {}
+
 # ─── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Culinary Agent",
@@ -260,7 +271,8 @@ Return ONLY A SINGLE NUMBER between 0 and 100. DO NOT RETURN ANY EXPLANATION."""
         model=model_name,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
-        max_tokens=10,
+        max_tokens=16,
+        **REASONING_KWARGS,
     )
     score_text = response.choices[0].message.content.strip()
     try:
@@ -355,7 +367,10 @@ def parse_intent(user_input, client, model_name):
             {"role": "user", "content": prompt},
         ],
         temperature=0.8,
-        max_tokens=200,
+        # Qwen3.6 pretty-prints its JSON, so the intent object needs more room
+        # than the ~200 tokens Llama 3.3 used to emit.
+        max_tokens=500,
+        **REASONING_KWARGS,
     )
     text = clean_llm_json(response.choices[0].message.content.strip())
     try:
@@ -375,7 +390,9 @@ def generate_recipes(intent, user_input, kitchen_state, client, model_name):
             {"role": "user", "content": prompt},
         ],
         temperature=0,
-        max_tokens=2000,
+        # Three fully-specified recipes run ~2800 tokens of pretty-printed JSON.
+        max_tokens=4096,
+        **REASONING_KWARGS,
     )
     text = clean_llm_json(response.choices[0].message.content.strip())
     try:
@@ -480,7 +497,8 @@ Return JSON:
             model=model_name,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=1000,
+            max_tokens=1600,
+            **REASONING_KWARGS,
         )
         text = clean_llm_json(response.choices[0].message.content.strip())
         try:
@@ -529,7 +547,8 @@ Rules:
             model=model_name,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
-            max_tokens=800,
+            max_tokens=1200,
+            **REASONING_KWARGS,
         )
         text = clean_llm_json(response.choices[0].message.content.strip())
         try:
@@ -762,7 +781,7 @@ For a detailed writeup of the system design, evaluation methodology, and results
 
 ### Technical Stack
 
-- **LLM**: Llama 3.3 70B (via Groq) for intent parsing, recipe generation, enhancement, and evaluation
+- **LLM**: Qwen3.6 27B (via Groq) for intent parsing, recipe generation, enhancement, and evaluation
 - **Embeddings**: BGE-large-en-v1.5 for semantic retrieval over flavor and recipe corpora
 - **Vector Search**: FAISS indices for sub-millisecond nearest-neighbor lookup
 - **Structured Output**: Pydantic validation ensures LLM outputs conform to strict recipe schemas
@@ -775,7 +794,7 @@ For a detailed writeup of the system design, evaluation methodology, and results
     st.markdown("""
 ```mermaid
 graph TD
-    A["User Query<br/><i>'Give me an Asian tofu recipe'</i>"] --> B["Intent Parser<br/>(Llama 3.3 70B)"]
+    A["User Query<br/><i>'Give me an Asian tofu recipe'</i>"] --> B["Intent Parser<br/>(Qwen3.6 27B)"]
     B --> C{{"Structured Intent<br/>hard constraints + soft objectives + preferences"}}
     C --> D["Recipe Generator<br/>(LLM + Kitchen State)"]
     D --> E["Constraint Validator"]
@@ -818,7 +837,7 @@ with st.sidebar:
         if api_key:
             os.environ["GROQ_API_KEY"] = api_key
 
-    model_name = "llama-3.3-70b-versatile"
+    model_name = MODEL_NAME
 
     st.markdown("---")
     st.header("Kitchen Inventory")

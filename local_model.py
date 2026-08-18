@@ -35,6 +35,22 @@ DEFAULT_ADAPTER_DIR = "adapters"
 LORA_RANK = 8
 LORA_ALPHA = 16
 
+# Groq stopped serving llama-3.3-70b-versatile (decommissioned 2026-08-16), and
+# no general-purpose Llama chat model is left on GroqCloud, so the remote
+# backend now uses Qwen3.6 27B. Override with GROQ_MODEL if that changes.
+DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
+
+
+def groq_reasoning_kwargs(model_name: str) -> dict:
+    """Extra chat-completion kwargs needed to keep a model's output parseable.
+
+    Qwen3 models emit a <think> block before their answer by default, which
+    breaks JSON parsing and blows through the pipeline's max_tokens budgets.
+    reasoning_effort="none" turns thinking off so they behave like the plain
+    instruct model this pipeline was written against.
+    """
+    return {"reasoning_effort": "none"} if "qwen3" in model_name.lower() else {}
+
 
 def is_local_available() -> bool:
     return _torch_available
@@ -362,7 +378,8 @@ class LLMBackend:
         if backend == "groq":
             from groq import Groq
             self.client = Groq()
-            self.model_name = kwargs.get("model_name", "llama-3.3-70b-versatile")
+            self.model_name = kwargs.get("model_name") or DEFAULT_GROQ_MODEL
+            self._extra_kwargs = groq_reasoning_kwargs(self.model_name)
         elif backend == "local":
             self.local_model = LocalLLM(**kwargs)
             self.local_model.load()
@@ -388,6 +405,7 @@ class LLMBackend:
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                **self._extra_kwargs,
             )
             return response.choices[0].message.content.strip()
 
