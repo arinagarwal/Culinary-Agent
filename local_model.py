@@ -16,6 +16,7 @@ Requirements:
 import json
 import os
 import re
+import time
 from typing import Optional
 
 import numpy as np
@@ -50,6 +51,24 @@ def groq_reasoning_kwargs(model_name: str) -> dict:
     instruct model this pipeline was written against.
     """
     return {"reasoning_effort": "none"} if "qwen3" in model_name.lower() else {}
+
+
+# Groq's free tier allows 8,000 tokens per minute and charges the whole reserved
+# max_tokens against it, not just the tokens actually generated, so a full
+# pipeline run cannot fit in one window. 429s are expected; wait them out.
+RATE_LIMIT_MAX_ATTEMPTS = 5
+RATE_LIMIT_DEFAULT_WAIT = 15.0
+RATE_LIMIT_MAX_WAIT = 65.0
+
+
+def groq_retry_after(exc) -> float:
+    """Seconds to wait before retrying, from the response's retry-after header."""
+    try:
+        wait = float(exc.response.headers.get("retry-after", RATE_LIMIT_DEFAULT_WAIT))
+    except (AttributeError, TypeError, ValueError):
+        wait = RATE_LIMIT_DEFAULT_WAIT
+    # Pad by a second so we come back after the window has actually reset.
+    return min(wait + 1.0, RATE_LIMIT_MAX_WAIT)
 
 
 def is_local_available() -> bool:
@@ -400,14 +419,24 @@ class LLMBackend:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
 
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                **self._extra_kwargs,
-            )
-            return response.choices[0].message.content.strip()
+            from groq import RateLimitError
+
+            for attempt in range(RATE_LIMIT_MAX_ATTEMPTS):
+                try:
+                    response = self.client.chat.completions.create(
+                        model=self.model_name,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        **self._extra_kwargs,
+                    )
+                    return response.choices[0].message.content.strip()
+                except RateLimitError as exc:
+                    if attempt == RATE_LIMIT_MAX_ATTEMPTS - 1:
+                        raise
+                    wait = groq_retry_after(exc)
+                    print(f"Groq rate limit reached — retrying in {wait:.0f}s")
+                    time.sleep(wait)
 
         elif self.backend_type == "local":
             return self.local_model.generate(

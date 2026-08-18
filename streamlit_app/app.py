@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import os
 import re
+import time
 from typing import List, Optional
 from collections import defaultdict
 
@@ -9,7 +10,7 @@ import faiss
 import numpy as np
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
-from groq import Groq
+from groq import Groq, RateLimitError
 
 # ─── Model Config ──────────────────────────────────────────────────────────────
 # Groq decommissioned llama-3.3-70b-versatile on 2026-08-16 and no longer serves
@@ -21,6 +22,56 @@ MODEL_NAME = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
 # JSON parsing and eats the max_tokens budget. reasoning_effort="none" turns
 # thinking off so the model behaves like a plain instruct model.
 REASONING_KWARGS = {"reasoning_effort": "none"} if "qwen3" in MODEL_NAME.lower() else {}
+
+# Groq's free tier allows 8,000 tokens per minute, and it charges the whole
+# reserved max_tokens against that budget, not just the tokens actually
+# generated. One full pipeline run (intent -> 3 recipes -> 3 suggestion passes
+# -> 3 enhancements -> scoring) needs more than that, so 429s are an expected
+# part of a run rather than a bug; we wait out the window instead of crashing.
+RATE_LIMIT_MAX_ATTEMPTS = 5
+RATE_LIMIT_DEFAULT_WAIT = 15.0
+RATE_LIMIT_MAX_WAIT = 65.0
+
+
+def _retry_after_seconds(exc) -> float:
+    """Seconds to wait before retrying, from the response's retry-after header."""
+    try:
+        wait = float(exc.response.headers.get("retry-after", RATE_LIMIT_DEFAULT_WAIT))
+    except (AttributeError, TypeError, ValueError):
+        wait = RATE_LIMIT_DEFAULT_WAIT
+    # Pad by a second so we come back after the window has actually reset.
+    return min(wait + 1.0, RATE_LIMIT_MAX_WAIT)
+
+
+def groq_chat(client, model_name, messages, temperature, max_tokens):
+    """Chat completion that waits out free-tier rate limits and then retries."""
+    for attempt in range(RATE_LIMIT_MAX_ATTEMPTS):
+        try:
+            return client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **REASONING_KWARGS,
+            )
+        except RateLimitError as exc:
+            if attempt == RATE_LIMIT_MAX_ATTEMPTS - 1:
+                raise
+            wait = _retry_after_seconds(exc)
+            with st.spinner(f"Groq rate limit reached — resuming in {wait:.0f}s…"):
+                time.sleep(wait)
+
+
+def trim_rag_context(results, max_chars=500):
+    """Shrink retrieved documents before they are pasted into a prompt.
+
+    Retrieved texts average ~1,600 characters and run as long as 30,000, so the
+    twelve documents a suggestion prompt used to carry cost ~5,800 prompt
+    tokens — most of the free tier's per-minute budget for a single call. The
+    leading lines carry the ingredient name, key odorants, and flavor
+    descriptors, which is all these prompts ask the model to use.
+    """
+    return [{**r, "text": r["text"][:max_chars]} for r in results]
 
 # ─── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -267,12 +318,12 @@ Consider: balance of flavor, culinary realism.
 Return ONLY A SINGLE NUMBER between 0 and 100. DO NOT RETURN ANY EXPLANATION."""
 
     prompt = f"{eval_prompt}\n\ndish ingredients:\n{ingredients}\n\ndish steps:\n{steps}"
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=[{"role": "user", "content": prompt}],
+    response = groq_chat(
+        client,
+        model_name,
+        [{"role": "user", "content": prompt}],
         temperature=0.3,
         max_tokens=16,
-        **REASONING_KWARGS,
     )
     score_text = response.choices[0].message.content.strip()
     try:
@@ -307,6 +358,44 @@ INTENT_SCHEMA = {
         "diet": None,
     },
 }
+
+# Qwen3 answers these fields with a descriptive word ("spicy", "high") where the
+# schema wants a 0-1 float. Without this the whole intent fails validation and
+# the pipeline silently proceeds with no constraints at all.
+LEVEL_LABEL_MAP = {
+    "none": 0.0,
+    "very mild": 0.1,
+    "mild": 0.25,
+    "low": 0.25,
+    "medium": 0.5,
+    "moderate": 0.5,
+    "high": 0.75,
+    "spicy": 0.75,
+    "hot": 0.85,
+    "very high": 0.9,
+    "very spicy": 0.9,
+    "extreme": 1.0,
+}
+
+LEVEL_FIELDS = (
+    ("preferences", ("spice_level",)),
+    ("soft_objectives", ("taste_priority", "health_priority", "authenticity_priority")),
+)
+
+
+def coerce_level_labels(data):
+    """Turn descriptive level words into the 0-1 floats the schema expects.
+
+    An unrecognized word becomes None, which the schema already treats as
+    "unspecified" — better than discarding the entire parsed intent.
+    """
+    for section, fields in LEVEL_FIELDS:
+        block = data.get(section) or {}
+        for field in fields:
+            value = block.get(field)
+            if isinstance(value, str):
+                block[field] = LEVEL_LABEL_MAP.get(value.strip().lower())
+    return data
 
 SYSTEM_PROMPT = """You are a semantic parser for a cooking assistant.
 Your job is to extract constraints and preferences from user input.
@@ -360,9 +449,10 @@ Structure:
 
 def parse_intent(user_input, client, model_name):
     prompt = f"Schema:\n{json.dumps(INTENT_SCHEMA)}\n\nUser request:\n{user_input}"
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=[
+    response = groq_chat(
+        client,
+        model_name,
+        [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
@@ -370,11 +460,10 @@ def parse_intent(user_input, client, model_name):
         # Qwen3.6 pretty-prints its JSON, so the intent object needs more room
         # than the ~200 tokens Llama 3.3 used to emit.
         max_tokens=500,
-        **REASONING_KWARGS,
     )
     text = clean_llm_json(response.choices[0].message.content.strip())
     try:
-        data = json.loads(text)
+        data = coerce_level_labels(json.loads(text))
         intent = Intent.model_validate(data)
         return intent.model_dump(exclude_none=True)
     except (json.JSONDecodeError, Exception):
@@ -383,16 +472,18 @@ def parse_intent(user_input, client, model_name):
 
 def generate_recipes(intent, user_input, kitchen_state, client, model_name):
     prompt = f"User request:\n{user_input}\n\nUser intent:\n{json.dumps(intent)}\n\nKitchen state:\n{kitchen_state}\n\nPrompt:\n{RECIPE_GENERATION_PROMPT}"
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=[
+    response = groq_chat(
+        client,
+        model_name,
+        [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
         temperature=0,
-        # Three fully-specified recipes run ~2800 tokens of pretty-printed JSON.
-        max_tokens=4096,
-        **REASONING_KWARGS,
+        # Three fully-specified recipes measured ~2,800 tokens of pretty-printed
+        # JSON. Reserved tokens count against the rate limit, so leave margin
+        # for that and no more.
+        max_tokens=3200,
     )
     text = clean_llm_json(response.choices[0].message.content.strip())
     try:
@@ -493,12 +584,13 @@ Return JSON:
     for recipe, additions in zip(candidates.recipes, all_suggestions):
         added_ingredients = [a.ingredient for a in additions.kitchen_state_additions]
         prompt = f"{recipe_prompt}\n\nOriginal recipe name:\n{recipe.recipe_name}\n\nOriginal ingredients:\n{json.dumps([i.model_dump() for i in recipe.ingredients_required])}\n\nIngredients to add:\n{json.dumps(added_ingredients)}"
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[{"role": "user", "content": prompt}],
+        response = groq_chat(
+            client,
+            model_name,
+            [{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=1600,
-            **REASONING_KWARGS,
+            # Measured ~960 tokens for a full enhanced recipe.
+            max_tokens=1200,
         )
         text = clean_llm_json(response.choices[0].message.content.strip())
         try:
@@ -536,19 +628,20 @@ Rules:
             for combo in recipe.flavor_profile
             for ing_name in combo.ingredients
         )
-        odorant_results = pairing_search(
+        odorant_results = trim_rag_context(pairing_search(
             f"Which odorants do these ingredients have {prominent_ingredients}", data, embed_model
-        )
-        misc_results = pairing_search(
+        ))
+        misc_results = trim_rag_context(pairing_search(
             f"What combinations are good with these ingredients {prominent_ingredients}", data, embed_model
-        )
+        ))
         prompt = f"{prompt_scaffold}\n\nDish name: {recipe.recipe_name}\n\nDish ingredients:\n{list(prominent_ingredients)}\n\nOdorant context:\n{json.dumps(odorant_results)}\n\nAdditional pairing context:\n{json.dumps(misc_results)}\n\nKitchen state:\n{kitchen_state}"
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[{"role": "user", "content": prompt}],
+        response = groq_chat(
+            client,
+            model_name,
+            [{"role": "user", "content": prompt}],
             temperature=0,
-            max_tokens=1200,
-            **REASONING_KWARGS,
+            # Measured ~510 tokens for 6 kitchen + 6 external suggestions.
+            max_tokens=800,
         )
         text = clean_llm_json(response.choices[0].message.content.strip())
         try:

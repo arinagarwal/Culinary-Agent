@@ -1322,8 +1322,12 @@ User request:
         max_tokens=500,
     )
 
+    # Qwen3.6 favours words like "spicy" over the schema's 0-1 float, so the
+    # label map has to cover more than Llama's mild/medium/high vocabulary.
     _SPICE_LABEL_MAP = {
-        "none": 0.0, "mild": 0.25, "medium": 0.5, "high": 0.75, "extreme": 1.0,
+        "none": 0.0, "very mild": 0.1, "mild": 0.25, "low": 0.25,
+        "medium": 0.5, "moderate": 0.5, "high": 0.75, "spicy": 0.75,
+        "hot": 0.85, "very high": 0.9, "very spicy": 0.9, "extreme": 1.0,
     }
 
     try:
@@ -1334,7 +1338,14 @@ User request:
         prefs = data.get("preferences") or {}
         sl = prefs.get("spice_level")
         if isinstance(sl, str):
-            prefs["spice_level"] = _SPICE_LABEL_MAP.get(sl.lower())
+            prefs["spice_level"] = _SPICE_LABEL_MAP.get(sl.strip().lower())
+
+        # Same treatment for the soft objectives, which Qwen3.6 also words.
+        objectives = data.get("soft_objectives") or {}
+        for field in ("taste_priority", "health_priority", "authenticity_priority"):
+            value = objectives.get(field)
+            if isinstance(value, str):
+                objectives[field] = _SPICE_LABEL_MAP.get(value.strip().lower())
 
         intent = Intent.model_validate(data)
         # Remove fields where value is None
@@ -1383,7 +1394,8 @@ def generate_recipes(
         max_tok = 1200
     else:
         recipe_count_instruction = RECIPE_GENERATION_PROMPT
-        max_tok = 4096
+        # Three fully-specified recipes measured ~2,800 tokens on Qwen3.6.
+        max_tok = 3200
 
     prompt = f"""
 User request:
@@ -1660,6 +1672,18 @@ def pairing_search(query: str, k: int = 5) -> list:
 
     return [metadata[i] for i in ids[0]]
 
+
+def trim_rag_context(results: list, max_chars: int = 500) -> list:
+    """Shrink retrieved documents before they are pasted into a prompt.
+
+    Retrieved texts average ~1,600 characters and run as long as 30,000, which
+    costs thousands of prompt tokens per suggestion call — most of the Groq free
+    tier's 8,000-token-per-minute budget. The leading lines carry the ingredient
+    name, key odorants, and flavor descriptors, which is all these prompts ask
+    the model to use.
+    """
+    return [{**r, "text": r["text"][:max_chars]} for r in results]
+
 # ── Odorant graph utilities ──────────────────────────────────────────────────
 # Requirements: 12.3
 
@@ -1893,12 +1917,12 @@ def suggest_recipe_additions(
             for ing_name in combo.ingredients
         )
 
-        odorant_results = pairing_search(
+        odorant_results = trim_rag_context(pairing_search(
             f"Which odorants do these ingredients have {prominent_ingredients}"
-        )
-        misc_results = pairing_search(
+        ))
+        misc_results = trim_rag_context(pairing_search(
             f"What combinations are good with these ingredients {prominent_ingredients}"
-        )
+        ))
 
         prompt = f"""
       {INGREDIENT_SUGGESTION_PROMPT}
@@ -1922,7 +1946,10 @@ def suggest_recipe_additions(
             prompt=prompt,
             system_prompt="",
             temperature=temperature,
-            max_tokens=1200,
+            # Measured ~510 tokens for 6 kitchen + 6 external suggestions.
+            # Reserved tokens count against the rate limit, so leave margin
+            # for that and no more.
+            max_tokens=800,
         )
 
         text = response
